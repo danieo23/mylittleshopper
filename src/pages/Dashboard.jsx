@@ -50,7 +50,7 @@ export default function Dashboard() {
       setMessages(m => [...m, { role: 'ai', text: data.reply }]);
       setHistory(data.history);
     } catch (err) {
-      setMessages(m => [...m, { role: 'ai', text: "Something went wrong — try again in a moment." }]);
+      setMessages(m => [...m, { role: 'ai', text: `Error: ${err.message}` }]);
     } finally {
       setLoading(false);
     }

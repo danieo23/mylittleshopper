@@ -172,6 +172,7 @@ export default async function handler(req, res) {
   const { message, conversationHistory = [], userId } = req.body;
   if (!message || !userId) return res.status(400).json({ error: 'message and userId are required' });
 
+  try {
   // Load user profile upfront so the system prompt has context
   const userProfile = await getUserProfile(userId);
 
@@ -220,4 +221,8 @@ export default async function handler(req, res) {
     reply:   finalText,
     history: messages,
   });
+  } catch (err) {
+    console.error('[agent] fatal error:', err);
+    return res.status(500).json({ error: err.message ?? 'Internal server error' });
+  }
 }

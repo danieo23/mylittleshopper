@@ -83,6 +83,7 @@ export default function Onboarding() {
   const navigate = useNavigate();
   const [step, setStep] = useState(0);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const [uploads, setUploads] = useState({ wardrobe: [], outfit: [], inspo: [] });
   const [uploading, setUploading] = useState({});
 
@@ -126,6 +127,7 @@ export default function Onboarding() {
 
   const finish = async () => {
     setSaving(true);
+    setSaveError('');
     try {
       const me = await base44.auth.me();
       await base44.entities.StyleProfile.create({
@@ -140,6 +142,7 @@ export default function Onboarding() {
       navigate('/dashboard');
     } catch (e) {
       console.error(e);
+      setSaveError(e.message || 'Something went wrong. Please try again.');
     } finally {
       setSaving(false);
     }
@@ -410,6 +413,9 @@ export default function Onboarding() {
               >
                 {saving ? 'Saving…' : 'Start shopping'} <ArrowRight className="w-3.5 h-3.5" />
               </button>
+              {saveError && (
+                <p className="mt-4 text-xs text-destructive max-w-sm mx-auto">{saveError}</p>
+              )}
             </div>
           )}
 
