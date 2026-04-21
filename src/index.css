@@ -1,0 +1,57 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --font-serif: 'Fraunces', Georgia, serif;
+    --font-sans: 'Inter', system-ui, sans-serif;
+    --background: 0 0% 5%;
+    --foreground: 36 22% 93%;
+    --card: 0 0% 8%;
+    --card-foreground: 36 22% 93%;
+    --popover: 0 0% 8%;
+    --popover-foreground: 36 22% 93%;
+    --primary: 43 56% 55%;
+    --primary-foreground: 0 0% 5%;
+    --secondary: 0 0% 11%;
+    --secondary-foreground: 36 22% 93%;
+    --muted: 0 0% 11%;
+    --muted-foreground: 0 0% 50%;
+    --accent: 0 0% 11%;
+    --accent-foreground: 36 22% 93%;
+    --destructive: 0 62.8% 40%;
+    --destructive-foreground: 36 22% 93%;
+    --border: 0 0% 14%;
+    --input: 0 0% 14%;
+    --ring: 43 56% 55%;
+    --radius: 0.25rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  .font-serif {
+    font-family: var(--font-serif);
+    font-feature-settings: 'ss01', 'ss02';
+  }
+}
+
+@layer utilities {
+  .ticker-track {
+    animation: ticker 40s linear infinite;
+  }
+  @keyframes ticker {
+    from { transform: translateX(0); }
+    to   { transform: translateX(-50%); }
+  }
+}

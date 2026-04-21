@@ -1,0 +1,127 @@
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
+
+const RECENCY_WEIGHT = (uploadedAt) => {
+  const days = (Date.now() - new Date(uploadedAt).getTime()) / (1000 * 60 * 60 * 24);
+  if (days <= 30)  return 2.0;
+  if (days <= 180) return 1.0;
+  return 0.5;
+};
+
+function topN(freq, n = 5) {
+  return Object.entries(freq)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, n)
+    .map(([k]) => k);
+}
+
+function buildFrequencyMap(items, getter, weightFn = () => 1) {
+  const map = {};
+  for (const item of items) {
+    const values = [].concat(getter(item) ?? []);
+    const w = weightFn(item);
+    for (const v of values) {
+      if (v) map[v] = (map[v] ?? 0) + w;
+    }
+  }
+  return map;
+}
+
+/**
+ * Synthesizes all wardrobe + aspiration items into an updated Style DNA.
+ * Writes the result to the style_dna table.
+ */
+export async function synthesizeStyleDna(userId) {
+  const [{ data: wardrobe }, { data: aspiration }] = await Promise.all([
+    supabase.from('wardrobe_items').select('*').eq('user_id', userId),
+    supabase.from('aspiration_items').select('*').eq('user_id', userId),
+  ]);
+
+  const all = [
+    ...(wardrobe  ?? []).map(i => ({ ...i, _source: 'wardrobe',    _date: i.uploaded_at })),
+    ...(aspiration ?? []).map(i => ({ ...i, _source: 'aspiration', _date: i.analyzed_at })),
+  ];
+
+  if (all.length === 0) return null;
+
+  const wFn = (i) => RECENCY_WEIGHT(i._date);
+
+  // Colors
+  const primaryColorFreq   = buildFrequencyMap(all, i => i.colors?.slice(0, 2), wFn);
+  const secondaryColorFreq = buildFrequencyMap(all, i => i.colors?.slice(2, 4), wFn);
+  const primaryColors   = topN(primaryColorFreq, 5);
+  const secondaryColors = topN(secondaryColorFreq, 3);
+
+  // Fit
+  const fitFreq = buildFrequencyMap(all, i => i.fit_type, wFn);
+  const dominantFit = topN(fitFreq, 1)[0] ?? null;
+  const fitValues = Object.values(fitFreq);
+  const fitTotal  = fitValues.reduce((s, v) => s + v, 0);
+  const fitMax    = Math.max(...fitValues, 1);
+  const fitConsistencyScore = Math.round((fitMax / fitTotal) * 100);
+
+  // Style categories
+  const styleFreq = buildFrequencyMap(all, i => i.style_category, wFn);
+  const [primaryStyleCategory, ...otherCategories] = topN(styleFreq, 3);
+  const secondaryCategories = otherCategories.filter(Boolean);
+
+  // Formality
+  const formalityScores = all
+    .filter(i => i.formality_score != null)
+    .map(i => ({ score: i.formality_score, w: wFn(i) }));
+  const weightedFormality = formalityScores.length > 0
+    ? formalityScores.reduce((s, i) => s + i.score * i.w, 0) /
+      formalityScores.reduce((s, i) => s + i.w, 0)
+    : 5;
+  const formalityMin = Math.max(1, Math.round(weightedFormality - 1.5));
+  const formalityMax = Math.min(10, Math.round(weightedFormality + 1.5));
+
+  // Brands
+  const brandFreq = buildFrequencyMap(all, i => i.brand, wFn);
+  const brandAffinities = topN(brandFreq, 10);
+
+  // Aspiration gap: style/color attributes in aspiration but not wardrobe
+  const wardrobeStyles = new Set((wardrobe ?? []).map(i => i.style_category).filter(Boolean));
+  const aspirationStyleFreq = buildFrequencyMap(aspiration ?? [], i => i.style_category);
+  const aspirationGap = Object.entries(aspirationStyleFreq)
+    .filter(([style]) => !wardrobeStyles.has(style))
+    .sort((a, b) => b[1] - a[1])
+    .map(([style]) => style);
+
+  // Confidence
+  const imageCount = all.length;
+  const overallConfidenceScore = imageCount < 20 ? 'low' : imageCount < 50 ? 'medium' : 'high';
+
+  const dna = {
+    user_id:                  userId,
+    primary_colors:           primaryColors,
+    secondary_colors:         secondaryColors,
+    avoided_colors:           [],             // populated via rejection feedback
+    dominant_fit:             dominantFit,
+    fit_consistency_score:    fitConsistencyScore,
+    primary_style_category:   primaryStyleCategory ?? null,
+    secondary_categories:     secondaryCategories,
+    formality_range_min:      formalityMin,
+    formality_range_max:      formalityMax,
+    brand_affinities:         brandAffinities,
+    brand_rejections:         [],
+    explicit_dislikes:        {},
+    aspiration_gap:           aspirationGap,
+    per_category_price_sensitivity: {},
+    overall_confidence_score: overallConfidenceScore,
+    last_synthesized_at:      new Date().toISOString(),
+  };
+
+  const { data, error } = await supabase
+    .from('style_dna')
+    .upsert(dna, { onConflict: 'user_id' })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
