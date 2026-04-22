@@ -11,54 +11,40 @@ import { synthesizeStyleDna }   from '../tools/synthesize_style_dna.js';
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-// ── Tool definitions (passed to Claude) ───────────────────────────
+// ── Tool definitions ───────────────────────────────────────────────
+// get_user_profile and score_products are intentionally omitted:
+//   - Profile data is fully embedded in the system prompt — no tool call needed
+//   - Scoring runs automatically inside search_products before returning results
+// This reduces the pipeline from 5 Claude round-trips to 3.
 const TOOLS = [
   {
-    name: 'get_user_profile',
-    description: 'Fetch the user\'s complete profile: Style DNA, wardrobe, aspiration items, order history, wallet balance. Call this first before any recommendation.',
-    input_schema: {
-      type: 'object',
-      properties: { user_id: { type: 'string' } },
-      required: ['user_id'],
-    },
-  },
-  {
     name: 'search_products',
-    description: 'Search for products matching style-aware search terms. Use specific descriptive queries derived from the Style DNA.',
+    description: 'Search for real products matching style-aware queries. Results are automatically scored against the user\'s Style DNA and filtered to the best matches. Call once per category needed, all in the same turn.',
     input_schema: {
       type: 'object',
       properties: {
-        query:     { type: 'string', description: 'Style-aware search string e.g. "relaxed tapered earth tone trousers"' },
-        category:  { type: 'string', enum: ['tops', 'bottoms', 'shoes', 'outerwear', 'accessories', 'dress'] },
-        maxPrice:  { type: 'number' },
-        stores:    { type: 'array', items: { type: 'string' }, description: 'Preferred stores to filter by' },
+        query:    { type: 'string', description: 'Style-aware search string, e.g. "relaxed tapered earth tone trousers"' },
+        category: { type: 'string', enum: ['tops', 'bottoms', 'shoes', 'outerwear', 'accessories', 'dress'] },
+        maxPrice: { type: 'number' },
+        stores:   { type: 'array', items: { type: 'string' } },
       },
       required: ['query', 'category'],
     },
   },
   {
-    name: 'score_products',
-    description: 'Score a list of products against the user\'s Style DNA. Returns each product with a score 0-100. Only products scoring 60+ should go to the outfit builder.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        products: { type: 'array', description: 'Products returned from search_products' },
-        style_dna: { type: 'object', description: 'User\'s Style DNA object from get_user_profile' },
-      },
-      required: ['products', 'style_dna'],
-    },
-  },
-  {
     name: 'build_outfits',
-    description: 'Assemble 3-5 complete outfit combinations from scored products. Returns structured outfit cards with style notes personalized to the user.',
+    description: 'Assemble 3 complete outfit combinations from the search results. Pass all searched categories together.',
     input_schema: {
       type: 'object',
       properties: {
-        scored_products: { type: 'object', description: 'Products grouped by category, each with a _score field' },
-        budget:          { type: 'number' },
-        occasion:        { type: 'string' },
+        products_by_category: {
+          type: 'object',
+          description: 'Object keyed by category (tops/bottoms/shoes/etc), value is the array returned by search_products for that category',
+        },
+        budget:   { type: 'number' },
+        occasion: { type: 'string' },
       },
-      required: ['scored_products', 'budget'],
+      required: ['products_by_category', 'budget'],
     },
   },
   {
@@ -67,23 +53,23 @@ const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        items:         { type: 'array', description: 'Items to purchase with their product details' },
-        total_price:   { type: 'number' },
-        occasion:      { type: 'string' },
+        items:       { type: 'array' },
+        total_price: { type: 'number' },
+        occasion:    { type: 'string' },
       },
       required: ['items', 'total_price'],
     },
   },
   {
     name: 'update_style_dna',
-    description: 'Log a feedback signal (approval/rejection/swap) and update the Style DNA accordingly.',
+    description: 'Log a feedback signal (approval/rejection/swap) to improve future recommendations.',
     input_schema: {
       type: 'object',
       properties: {
-        signal_type:      { type: 'string', enum: ['approval', 'rejection', 'swap', 'post_delivery_positive', 'post_delivery_negative'] },
-        item_attributes:  { type: 'object', description: 'Style attributes of the item that was approved/rejected' },
-        swap_target:      { type: 'object', description: 'For swap signals: what they chose instead' },
-        inferred_reason:  { type: 'string' },
+        signal_type:     { type: 'string', enum: ['approval', 'rejection', 'swap', 'post_delivery_positive', 'post_delivery_negative'] },
+        item_attributes: { type: 'object' },
+        swap_target:     { type: 'object' },
+        inferred_reason: { type: 'string' },
       },
       required: ['signal_type', 'item_attributes'],
     },
@@ -92,61 +78,65 @@ const TOOLS = [
 
 // ── System prompt ──────────────────────────────────────────────────
 function buildSystemPrompt(userProfile) {
-  const { styleDna, confidenceLevel, imageCount, wallet } = userProfile;
+  const { styleDna, confidenceLevel, imageCount, wallet, favoriteStores, sizes } = userProfile;
 
-  return `You are the mylilshopper AI — a personal shopping agent. Your one job: understand this person's style deeply and find them exactly the right clothes.
+  const dna = styleDna ?? {};
 
-CURRENT USER CONTEXT:
-- Profile confidence: ${confidenceLevel} (${imageCount} images analyzed)
-- Wallet balance: $${wallet?.balance?.toFixed(2) ?? '0.00'}
-- Primary style: ${styleDna?.primary_style_category ?? 'not yet determined'}
-- Dominant fit: ${styleDna?.dominant_fit ?? 'not yet determined'}
-- Top colors: ${styleDna?.primary_colors?.join(', ') || 'not yet determined'}
-- Aspiration gap: ${styleDna?.aspiration_gap?.join(', ') || 'none identified'}
-- Formality range: ${styleDna ? `${styleDna.formality_range_min}–${styleDna.formality_range_max}/10` : 'not determined'}
+  return `You are the mylilshopper AI — a personal shopping agent. Find exactly the right clothes for this specific person.
+
+USER PROFILE (complete — no tool call needed to fetch this):
+- Confidence: ${confidenceLevel} (${imageCount} images analyzed)
+- Wallet: $${wallet?.balance?.toFixed(2) ?? '0.00'}
+- Primary style: ${dna.primary_style_category ?? 'not yet determined'}
+- Secondary styles: ${dna.secondary_categories?.join(', ') || 'none'}
+- Dominant fit: ${dna.dominant_fit ?? 'not yet determined'}
+- Primary colors: ${dna.primary_colors?.join(', ') || 'not determined'}
+- Secondary colors: ${dna.secondary_colors?.join(', ') || 'none'}
+- Avoided colors: ${dna.avoided_colors?.join(', ') || 'none'}
+- Formality range: ${dna.formality_range_min ?? '?'}–${dna.formality_range_max ?? '?'}/10
+- Brand affinities: ${dna.brand_affinities?.join(', ') || 'none'}
+- Brand rejections: ${dna.brand_rejections?.join(', ') || 'none'}
+- Aspiration gap: ${dna.aspiration_gap?.join(', ') || 'none identified'}
+- Favorite stores: ${favoriteStores?.join(', ') || 'none set'}
+- Sizes: ${sizes ? Object.entries(sizes).map(([k,v]) => `${k}:${v}`).join(', ') : 'not set'}
 
 OPERATING RULES:
-1. Always call get_user_profile first — never skip this
-2. Confidence ${confidenceLevel === 'low' ? 'is LOW — ask up to 2 clarifying questions, offer more options, be collaborative' : confidenceLevel === 'medium' ? 'is MEDIUM — mostly assertive, check in occasionally' : 'is HIGH — be direct and assertive, minimal questions'}
-3. Never ask more than one question at a time
-4. Never ask something already known from the Style DNA
-5. Always reference the user's specific profile when explaining a recommendation — never use generic language
-6. When you make an inference, state it briefly so they can correct you
-7. Short responses after the user makes a choice — "Love it, I'm on it" not paragraphs
-8. If wallet is insufficient for an order, state the shortfall clearly and stop
+1. ${confidenceLevel === 'low' ? 'Confidence is LOW — ask up to 2 clarifying questions before searching, offer more variety' : confidenceLevel === 'medium' ? 'Confidence is MEDIUM — mostly assertive, occasional check-ins' : 'Confidence is HIGH — be direct and assertive, minimal questions'}
+2. Never ask more than one question at a time
+3. Never ask something already in the profile above
+4. Reference the user's specific profile when explaining recommendations — never generic language
+5. If wallet is insufficient for an order, state the shortfall and stop
 
-PRODUCT RECOMMENDATION RULES (CRITICAL):
-- NEVER describe, name, or invent products from memory. Every product recommendation MUST come from a search_products tool call.
-- When the user asks for outfits, shopping help, or product recommendations, execute this exact sequence in tool calls — no text between steps:
-  1. Call search_products for every needed category IN THE SAME TURN (parallel)
-  2. Call score_products with all results IN THE SAME TURN
-  3. Call build_outfits immediately after scoring
-  4. ONLY THEN write your short text reply
-- DO NOT emit any text between tool calls. No "Now let me...", no "Next I'll...", no progress updates. Go straight from one tool call to the next. The user sees a loading indicator — narration is noise.
-- If search_products returns an error or empty results, tell the user exactly that — do not fall back to describing products yourself.
-- After build_outfits runs, your text reply should be 1–2 sentences max: e.g. "Here's your Italy capsule — three looks built around your coastal palette. Swap anything you want." That's it. The UI shows the products visually.`;
+PRODUCT SEARCH RULES (CRITICAL — follow exactly):
+- NEVER name or describe products from memory. Every recommendation must come from search_products.
+- When the user wants outfit recommendations:
+  STEP 1 — Call search_products for every category needed, ALL IN THE SAME TURN (they run in parallel).
+            Use style-aware queries from the profile above, e.g. "relaxed earth tone linen trousers".
+            Limit to 3–4 categories max per request.
+  STEP 2 — Call build_outfits immediately with ALL search results grouped by category.
+            Do NOT emit any text before this. No "Now let me...", no progress commentary.
+  STEP 3 — Write your 1–2 sentence reply AFTER build_outfits returns.
+            The UI displays the products visually — do not list items in text.
+- If search returns an error, tell the user exactly what failed. Do not fall back to invented products.
+- After build_outfits: reply is conversational and short. "Here's your Italy capsule — swap anything you want." That's it.`;
 }
 
 // ── Tool execution ─────────────────────────────────────────────────
 async function executeTool(toolName, toolInput, userId, userProfile) {
   switch (toolName) {
-    case 'get_user_profile':
-      return userProfile; // already fetched — return cached copy
-
-    case 'search_products':
-      return searchProducts(toolInput);
-
-    case 'score_products': {
-      const scored = toolInput.products.map(p => ({
-        ...p,
-        ...scoreProductMatch(p, toolInput.style_dna),
-      }));
-      return scored;
+    // search_products: fetch results then auto-score + filter against Style DNA
+    case 'search_products': {
+      const results = await searchProducts(toolInput);
+      return results
+        .map(p => ({ ...p, ...scoreProductMatch(p, userProfile.styleDna) }))
+        .filter(p => p.passes !== false)
+        .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+        .slice(0, 10);
     }
 
     case 'build_outfits':
       return buildOutfits({
-        scoredProducts: toolInput.scored_products,
+        scoredProducts: toolInput.products_by_category ?? toolInput.scored_products ?? {},
         styleDna:       userProfile.styleDna,
         wardrobeItems:  userProfile.wardrobeItems,
         budget:         toolInput.budget,
