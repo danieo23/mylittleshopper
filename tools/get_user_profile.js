@@ -12,6 +12,7 @@ const supabase = createClient(
 export async function getUserProfile(userId) {
   const [
     { data: profile },
+    { data: styleProfile },
     { data: styleDna },
     { data: wardrobeItems },
     { data: aspirationItems },
@@ -20,6 +21,7 @@ export async function getUserProfile(userId) {
     { data: feedbackSignals },
   ] = await Promise.all([
     supabase.from('users').select('*').eq('id', userId).single(),
+    supabase.from('style_profiles').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(1).single(),
     supabase.from('style_dna').select('*').eq('user_id', userId).single(),
     supabase.from('wardrobe_items').select('*').eq('user_id', userId).order('uploaded_at', { ascending: false }),
     supabase.from('aspiration_items').select('*').eq('user_id', userId).order('analyzed_at', { ascending: false }),
@@ -40,12 +42,18 @@ export async function getUserProfile(userId) {
 
   return {
     profile,
+    styleProfile,
     styleDna,
-    wardrobeItems:    (wardrobeItems   ?? []).map(stripImageData),
-    aspirationItems:  (aspirationItems ?? []).map(stripImageData),
-    recentOrders:     orders           ?? [],
-    wallet:           wallet           ?? { balance: 0 },
-    feedbackSignals:  feedbackSignals  ?? [],
+    wardrobeItems:       (wardrobeItems   ?? []).map(stripImageData),
+    aspirationItems:     (aspirationItems ?? []).map(stripImageData),
+    recentOrders:        orders           ?? [],
+    wallet:              wallet           ?? { balance: 0 },
+    feedbackSignals:     feedbackSignals  ?? [],
+    // Flattened style-vault fields for convenient access
+    sizes:               styleProfile?.sizes            ?? null,
+    favoriteStores:      styleProfile?.favorite_stores  ?? [],
+    styleTags:           styleProfile?.style_tags       ?? [],
+    pinterestBoardUrls:  styleProfile?.pinterest_board_urls ?? (styleProfile?.pinterest_board_url ? [styleProfile.pinterest_board_url] : []),
     confidenceLevel,
     imageCount: (wardrobeItems?.length ?? 0) + (aspirationItems?.length ?? 0),
   };

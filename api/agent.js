@@ -78,15 +78,22 @@ const TOOLS = [
 
 // ── System prompt ──────────────────────────────────────────────────
 function buildSystemPrompt(userProfile) {
-  const { styleDna, confidenceLevel, imageCount, wallet, favoriteStores, sizes } = userProfile;
+  const { styleDna, confidenceLevel, imageCount, wallet,
+          favoriteStores, sizes, styleTags, pinterestBoardUrls } = userProfile;
 
   const dna = styleDna ?? {};
+
+  const sizeLine = sizes
+    ? Object.entries(sizes).filter(([,v]) => v).map(([k, v]) => `${k}: ${v}`).join(', ')
+    : 'not set — do not ask, tell the user to add them in Style Vault';
 
   return `You are the mylilshopper AI — a personal shopping agent. Find exactly the right clothes for this specific person.
 
 USER PROFILE (complete — no tool call needed to fetch this):
 - Confidence: ${confidenceLevel} (${imageCount} images analyzed)
 - Wallet: $${wallet?.balance?.toFixed(2) ?? '0.00'}
+- Style tags: ${styleTags?.length ? styleTags.join(', ') : 'none set'}
+- Pinterest boards: ${pinterestBoardUrls?.length ? pinterestBoardUrls.join(', ') : 'none added'}
 - Primary style: ${dna.primary_style_category ?? 'not yet determined'}
 - Secondary styles: ${dna.secondary_categories?.join(', ') || 'none'}
 - Dominant fit: ${dna.dominant_fit ?? 'not yet determined'}
@@ -97,8 +104,8 @@ USER PROFILE (complete — no tool call needed to fetch this):
 - Brand affinities: ${dna.brand_affinities?.join(', ') || 'none'}
 - Brand rejections: ${dna.brand_rejections?.join(', ') || 'none'}
 - Aspiration gap: ${dna.aspiration_gap?.join(', ') || 'none identified'}
-- Favorite stores: ${favoriteStores?.join(', ') || 'none set'}
-- Sizes: ${sizes ? Object.entries(sizes).map(([k,v]) => `${k}:${v}`).join(', ') : 'not set'}
+- Favorite stores: ${favoriteStores?.length ? favoriteStores.join(', ') : 'none set'}
+- Sizes: ${sizeLine}
 
 OPERATING RULES:
 1. ${confidenceLevel === 'low' ? 'Confidence is LOW — ask up to 2 clarifying questions before searching, offer more variety' : confidenceLevel === 'medium' ? 'Confidence is MEDIUM — mostly assertive, occasional check-ins' : 'Confidence is HIGH — be direct and assertive, minimal questions'}
