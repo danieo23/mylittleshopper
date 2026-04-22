@@ -119,6 +119,7 @@ PRODUCT RECOMMENDATION RULES (CRITICAL):
 - NEVER describe, name, or invent products from memory. Every product recommendation MUST come from a search_products tool call.
 - When the user asks for outfits, shopping help, or product recommendations: call search_products (once per category needed), then score_products, then build_outfits. Always follow this sequence.
 - If search_products returns an error or empty results, tell the user exactly that — do not fall back to describing products yourself.
+- When searching multiple categories (e.g. tops + bottoms + shoes), call all search_products tools IN THE SAME TURN — do not wait for one to finish before requesting the next. This runs them in parallel and is much faster.
 - The build_outfits tool will automatically attach real images, prices, and links from the search. Your text reply should be a brief (2–3 sentence) intro to what you found — the UI shows the products visually, so do NOT list them in text.
 - After build_outfits runs, your text reply should be conversational and short: e.g. "Here's your Italy capsule — three looks built around your coastal palette. Let me know if you want to swap anything." That's it.`;
 }
@@ -127,7 +128,7 @@ PRODUCT RECOMMENDATION RULES (CRITICAL):
 async function executeTool(toolName, toolInput, userId, userProfile) {
   switch (toolName) {
     case 'get_user_profile':
-      return getUserProfile(userId);
+      return userProfile; // already fetched — return cached copy
 
     case 'search_products':
       return searchProducts(toolInput);
@@ -176,6 +177,7 @@ async function executeTool(toolName, toolInput, userId, userProfile) {
 export const config = { maxDuration: 120 };
 
 async function runAgent(message, conversationHistory, userId) {
+  // Fetch profile once — reused for system prompt and cached for tool calls
   const userProfile = await getUserProfile(userId);
 
   const messages = [
@@ -183,37 +185,43 @@ async function runAgent(message, conversationHistory, userId) {
     { role: 'user', content: message },
   ];
 
+  // Sonnet for the tool-use loop: same reasoning quality, 3-4x faster than Opus
+  const LOOP_MODEL  = 'claude-sonnet-4-6';
+  const LOOP_TOKENS = 2048; // tool calls don't need long output
+
   let response = await client.messages.create({
-    model:      'claude-opus-4-7',
-    max_tokens: 4096,
+    model:      LOOP_MODEL,
+    max_tokens: LOOP_TOKENS,
     system:     buildSystemPrompt(userProfile),
     tools:      TOOLS,
     messages,
   });
 
-  let lastOutfits = null; // captured from build_outfits tool call
+  let lastOutfits = null;
 
-  // Agentic loop — keep executing tool calls until Claude produces a final text response
+  // Agentic loop — execute all tool calls in parallel per turn, repeat until final text
   while (response.stop_reason === 'tool_use') {
     const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
-    const toolResults   = [];
 
-    for (const block of toolUseBlocks) {
-      try {
-        const result = await executeTool(block.name, block.input, userId, userProfile);
-        if (block.name === 'build_outfits') lastOutfits = result;
-        toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) });
-      } catch (err) {
-        toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: `Error: ${err.message}`, is_error: true });
-      }
-    }
+    // Run all tool calls for this turn in parallel (e.g. multiple search_products at once)
+    const toolResults = await Promise.all(
+      toolUseBlocks.map(async (block) => {
+        try {
+          const result = await executeTool(block.name, block.input, userId, userProfile);
+          if (block.name === 'build_outfits') lastOutfits = result;
+          return { type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) };
+        } catch (err) {
+          return { type: 'tool_result', tool_use_id: block.id, content: `Error: ${err.message}`, is_error: true };
+        }
+      })
+    );
 
     messages.push({ role: 'assistant', content: response.content });
     messages.push({ role: 'user',      content: toolResults });
 
     response = await client.messages.create({
-      model:      'claude-opus-4-7',
-      max_tokens: 4096,
+      model:      LOOP_MODEL,
+      max_tokens: LOOP_TOKENS,
       system:     buildSystemPrompt(userProfile),
       tools:      TOOLS,
       messages,
