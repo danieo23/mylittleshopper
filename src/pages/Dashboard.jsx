@@ -23,6 +23,7 @@ const LOADING_PHRASES = [
 // ─── Product card ────────────────────────────────────────────────────
 
 function ProductCard({ item, onReroll, onDislike }) {
+  const [imgFailed, setImgFailed] = useState(false);
   const p = item.product ?? {};
   const name  = p.name  ?? item.product_name ?? item.category ?? 'Item';
   const price = p.price ?? item.price ?? null;
@@ -33,10 +34,18 @@ function ProductCard({ item, onReroll, onDislike }) {
   return (
     <div className="w-44 shrink-0 flex flex-col border border-border bg-card snap-start">
       {/* Image */}
-      <div className="relative aspect-[3/4] bg-muted overflow-hidden group">
-        {img
-          ? <img src={img} alt={name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
-          : <div className="w-full h-full flex items-center justify-center"><ShoppingBag className="w-8 h-8 text-muted-foreground/20" /></div>
+      <div className="relative aspect-[3/4] bg-secondary overflow-hidden group">
+        {img && !imgFailed
+          ? <img
+              src={img}
+              alt={name}
+              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+              onError={() => setImgFailed(true)}
+            />
+          : <div className="w-full h-full flex flex-col items-center justify-center gap-2 px-3 text-center">
+              <ShoppingBag className="w-8 h-8 text-muted-foreground/30" />
+              {store && <span className="text-[9px] uppercase tracking-widest text-muted-foreground/50">{store}</span>}
+            </div>
         }
         {url && (
           <a
