@@ -213,13 +213,12 @@ async function runAgent(message, conversationHistory, userId) {
     { role: 'user', content: message },
   ];
 
-  // Sonnet for the tool-use loop: same reasoning quality, 3-4x faster than Opus
-  const LOOP_MODEL  = 'claude-sonnet-4-6';
+  const LOOP_MODEL  = 'claude-haiku-4-5-20251001';
   const LOOP_TOKENS = 4096;
 
   let lastOutfits      = null;
   let hasSearchResults = false; // only true when search_products returned actual products
-  const MAX_TURNS      = 6;
+  const MAX_TURNS      = 4;
   let turns            = 0;
 
   // tool_choice:'any' only when we have real results to build from.
