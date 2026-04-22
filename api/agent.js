@@ -166,14 +166,9 @@ async function executeTool(toolName, toolInput, userId, userProfile) {
 }
 
 // ── Main handler (Vercel serverless function) ──────────────────────
-export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+export const config = { maxDuration: 120 };
 
-  const { message, conversationHistory = [], userId } = req.body;
-  if (!message || !userId) return res.status(400).json({ error: 'message and userId are required' });
-
-  try {
-  // Load user profile upfront so the system prompt has context
+async function runAgent(message, conversationHistory, userId) {
   const userProfile = await getUserProfile(userId);
 
   const messages = [
@@ -216,13 +211,25 @@ export default async function handler(req, res) {
   }
 
   const finalText = response.content.find(b => b.type === 'text')?.text ?? '';
+  return { reply: finalText, history: messages };
+}
 
-  return res.status(200).json({
-    reply:   finalText,
-    history: messages,
-  });
+export default async function handler(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+  const { message, conversationHistory = [], userId } = req.body;
+  if (!message || !userId) return res.status(400).json({ error: 'message and userId are required' });
+
+  // Race the agent against a 110s timeout — always returns JSON, never lets Vercel kill it silently
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('The stylist took too long to respond. Please try again.')), 110_000)
+  );
+
+  try {
+    const result = await Promise.race([runAgent(message, conversationHistory, userId), timeout]);
+    return res.status(200).json(result);
   } catch (err) {
-    console.error('[agent] fatal error:', err);
+    console.error('[agent] error:', err);
     return res.status(500).json({ error: err.message ?? 'Internal server error' });
   }
 }
