@@ -156,12 +156,15 @@ PRODUCT SEARCH RULES (CRITICAL — follow exactly):
 // ── Tool execution ─────────────────────────────────────────────────
 async function executeTool(toolName, toolInput, userId, userProfile) {
   switch (toolName) {
-    // search_products: fetch results then auto-score + filter against Style DNA
+    // search_products: fetch, score, return best matches.
+    // If DNA isn't strong enough to push anything above the 60-pt threshold,
+    // fall back to the top-scored results rather than returning nothing.
     case 'search_products': {
       const results = await searchProducts(toolInput);
-      return results
-        .map(p => ({ ...p, ...scoreProductMatch(p, userProfile.styleDna) }))
-        .filter(p => p.passes !== false)
+      if (!results.length) return [];
+      const scored = results.map(p => ({ ...p, ...scoreProductMatch(p, userProfile.styleDna) }));
+      const passed = scored.filter(p => p.passes !== false);
+      return (passed.length >= 3 ? passed : scored)
         .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
         .slice(0, 10);
     }
