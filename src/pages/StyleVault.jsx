@@ -317,8 +317,8 @@ export default function StyleVault() {
       const data = await res.json();
       if (!data.success) {
         setWardrobeAnalyzeMsg(data.error ?? 'Analysis failed — try again.');
-      } else if (data.analyzed === 0) {
-        setWardrobeAnalyzeMsg(`0 new photos to analyze (${data.total ?? '?'} total in DB). ${data.debug ?? ''}`);
+      } else if (data.alreadyDone) {
+        setWardrobeAnalyzeMsg('All photos already analyzed — your Style DNA is up to date.');
       } else {
         setWardrobeAnalyzeMsg(`Done — ${data.analyzed} photo${data.analyzed !== 1 ? 's' : ''} analyzed.`);
       }
