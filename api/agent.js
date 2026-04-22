@@ -113,7 +113,14 @@ OPERATING RULES:
 5. Always reference the user's specific profile when explaining a recommendation — never use generic language
 6. When you make an inference, state it briefly so they can correct you
 7. Short responses after the user makes a choice — "Love it, I'm on it" not paragraphs
-8. If wallet is insufficient for an order, state the shortfall clearly and stop`;
+8. If wallet is insufficient for an order, state the shortfall clearly and stop
+
+PRODUCT RECOMMENDATION RULES (CRITICAL):
+- NEVER describe, name, or invent products from memory. Every product recommendation MUST come from a search_products tool call.
+- When the user asks for outfits, shopping help, or product recommendations: call search_products (once per category needed), then score_products, then build_outfits. Always follow this sequence.
+- If search_products returns an error or empty results, tell the user exactly that — do not fall back to describing products yourself.
+- The build_outfits tool will automatically attach real images, prices, and links from the search. Your text reply should be a brief (2–3 sentence) intro to what you found — the UI shows the products visually, so do NOT list them in text.
+- After build_outfits runs, your text reply should be conversational and short: e.g. "Here's your Italy capsule — three looks built around your coastal palette. Let me know if you want to swap anything." That's it.`;
 }
 
 // ── Tool execution ─────────────────────────────────────────────────
@@ -184,6 +191,8 @@ async function runAgent(message, conversationHistory, userId) {
     messages,
   });
 
+  let lastOutfits = null; // captured from build_outfits tool call
+
   // Agentic loop — keep executing tool calls until Claude produces a final text response
   while (response.stop_reason === 'tool_use') {
     const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
@@ -192,6 +201,7 @@ async function runAgent(message, conversationHistory, userId) {
     for (const block of toolUseBlocks) {
       try {
         const result = await executeTool(block.name, block.input, userId, userProfile);
+        if (block.name === 'build_outfits') lastOutfits = result;
         toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) });
       } catch (err) {
         toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: `Error: ${err.message}`, is_error: true });
@@ -211,7 +221,7 @@ async function runAgent(message, conversationHistory, userId) {
   }
 
   const finalText = response.content.find(b => b.type === 'text')?.text ?? '';
-  return { reply: finalText, history: messages };
+  return { reply: finalText, history: messages, outfits: lastOutfits };
 }
 
 export default async function handler(req, res) {

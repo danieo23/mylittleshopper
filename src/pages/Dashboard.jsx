@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ArrowRight, ShoppingBag, Loader2, Trash2 } from 'lucide-react';
+import { ArrowRight, ShoppingBag, Loader2, Trash2, RefreshCw, ThumbsDown, ExternalLink, ChevronLeft, ChevronRight } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { supabase } from '@/api/client';
 
@@ -20,19 +20,186 @@ const LOADING_PHRASES = [
   'Hold tight, this is going to be good.',
 ];
 
+// ─── Product card ────────────────────────────────────────────────────
+
+function ProductCard({ item, onReroll, onDislike }) {
+  const p = item.product ?? {};
+  const name  = p.name  ?? item.product_name ?? item.category ?? 'Item';
+  const price = p.price ?? item.price ?? null;
+  const store = p.store ?? null;
+  const img   = p.image_url ?? null;
+  const url   = p.product_url ?? null;
+
+  return (
+    <div className="w-44 shrink-0 flex flex-col border border-border bg-card snap-start">
+      {/* Image */}
+      <div className="relative aspect-[3/4] bg-muted overflow-hidden group">
+        {img
+          ? <img src={img} alt={name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+          : <div className="w-full h-full flex items-center justify-center"><ShoppingBag className="w-8 h-8 text-muted-foreground/20" /></div>
+        }
+        {url && (
+          <a
+            href={url} target="_blank" rel="noopener noreferrer"
+            className="absolute inset-0 flex items-end justify-end p-2 opacity-0 group-hover:opacity-100 transition bg-gradient-to-t from-black/30 to-transparent"
+          >
+            <ExternalLink className="w-4 h-4 text-white" />
+          </a>
+        )}
+      </div>
+
+      {/* Info */}
+      <div className="p-3 flex flex-col flex-1 gap-1">
+        {store && <div className="text-[9px] uppercase tracking-widest text-muted-foreground">{store}</div>}
+        <div className="text-xs text-foreground leading-snug line-clamp-2 flex-1">{name}</div>
+        {price != null && <div className="text-sm font-semibold text-foreground">${price}</div>}
+
+        {/* Actions */}
+        <div className="flex items-center gap-px mt-1 pt-2 border-t border-border">
+          <button
+            onClick={onReroll}
+            title="Swap this item"
+            className="flex-1 flex items-center justify-center gap-1 py-1.5 text-[9px] uppercase tracking-wider text-muted-foreground hover:text-foreground hover:bg-secondary transition"
+          >
+            <RefreshCw className="w-3 h-3" /> Swap
+          </button>
+          <button
+            onClick={onDislike}
+            title="Not my style"
+            className="px-2 py-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition border-l border-border"
+          >
+            <ThumbsDown className="w-3 h-3" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Outfit carousel ────────────────────────────────────────────────
+
+function OutfitCarousel({ outfits, onSendMessage }) {
+  const [activeIdx, setActiveIdx] = useState(0);
+  const scrollRef = useRef(null);
+
+  if (!outfits?.length) return null;
+  const outfit = outfits[activeIdx];
+  const items  = outfit.items ?? [];
+
+  const scroll = (dir) => {
+    if (scrollRef.current) scrollRef.current.scrollBy({ left: dir * 188, behavior: 'smooth' });
+  };
+
+  const handleReroll = (item) => {
+    const p    = item.product ?? {};
+    const name = p.name ?? item.product_name ?? item.category ?? 'that item';
+    onSendMessage(`Swap out the ${name} — find me a different option that fits the same look.`);
+  };
+
+  const handleDislike = (item) => {
+    const p    = item.product ?? {};
+    const name = p.name ?? item.product_name ?? item.category ?? 'that item';
+    onSendMessage(`I don't like the ${name}. Replace it with something different.`);
+  };
+
+  const totalPrice = outfit.total_price
+    ?? items.reduce((s, i) => s + (i.product?.price ?? 0), 0);
+
+  return (
+    <div className="mt-3 border border-border bg-card overflow-hidden">
+      {/* Outfit tabs */}
+      {outfits.length > 1 && (
+        <div className="flex border-b border-border overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
+          {outfits.map((o, i) => (
+            <button
+              key={i}
+              onClick={() => setActiveIdx(i)}
+              className={`shrink-0 px-4 py-2.5 text-[10px] uppercase tracking-wider border-b-2 transition -mb-px ${
+                activeIdx === i
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {o.outfit_name ?? `Look ${i + 1}`}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Outfit header */}
+      <div className="flex items-start justify-between px-4 pt-4 pb-2">
+        <div className="min-w-0 flex-1 pr-4">
+          {outfits.length === 1 && outfit.outfit_name && (
+            <div className="font-serif text-xl text-foreground mb-0.5">{outfit.outfit_name}</div>
+          )}
+          {outfit.style_note && (
+            <div className="text-xs text-muted-foreground leading-relaxed">{outfit.style_note}</div>
+          )}
+          {outfit.occasion_fit && (
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground/50 mt-1">{outfit.occasion_fit}</div>
+          )}
+        </div>
+        {totalPrice > 0 && (
+          <div className="text-right shrink-0">
+            <div className="text-2xl font-semibold text-foreground">${totalPrice}</div>
+            {outfit.wardrobe_multiplier > 0 && (
+              <div className="text-[10px] text-muted-foreground mt-0.5">
+                pairs w/ {outfit.wardrobe_multiplier} wardrobe items
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Scrollable items */}
+      <div className="relative">
+        <button
+          onClick={() => scroll(-1)}
+          className="absolute left-1 top-1/2 -translate-y-1/2 z-10 w-7 h-7 flex items-center justify-center bg-background/90 border border-border shadow-sm hover:bg-secondary transition"
+        >
+          <ChevronLeft className="w-4 h-4" />
+        </button>
+
+        <div
+          ref={scrollRef}
+          className="flex gap-3 overflow-x-auto px-8 pb-4 pt-2 snap-x scroll-smooth"
+          style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+        >
+          {items.map((item, i) => (
+            <ProductCard
+              key={i}
+              item={item}
+              onReroll={() => handleReroll(item)}
+              onDislike={() => handleDislike(item)}
+            />
+          ))}
+        </div>
+
+        <button
+          onClick={() => scroll(1)}
+          className="absolute right-1 top-1/2 -translate-y-1/2 z-10 w-7 h-7 flex items-center justify-center bg-background/90 border border-border shadow-sm hover:bg-secondary transition"
+        >
+          <ChevronRight className="w-4 h-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main component ──────────────────────────────────────────────────
+
 export default function Dashboard() {
   const [messages, setMessages] = useState([]);
   const [history, setHistory]   = useState([]);
   const [input, setInput]       = useState('');
-  const [loading, setLoading]         = useState(false);
+  const [loading, setLoading]   = useState(false);
   const [loadingPhrase, setLoadingPhrase] = useState(LOADING_PHRASES[0]);
-  const [userId, setUserId]           = useState(null);
+  const [userId, setUserId]     = useState(null);
   const bottomRef    = useRef(null);
   const animRef      = useRef(null);
   const phraseRef    = useRef(null);
   const phraseIdxRef = useRef(0);
 
-  // Get user and load saved chat
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (!user) return;
@@ -52,7 +219,6 @@ export default function Dashboard() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
 
-  // Clean up on unmount
   useEffect(() => () => {
     if (animRef.current)   clearInterval(animRef.current);
     if (phraseRef.current) clearInterval(phraseRef.current);
@@ -80,7 +246,7 @@ export default function Dashboard() {
       setMessages(m => {
         const copy = [...m];
         const last = copy[copy.length - 1];
-        if (last?.role === 'ai') copy[copy.length - 1] = { role: 'ai', text: words.slice(0, i).join(' ') };
+        if (last?.role === 'ai') copy[copy.length - 1] = { ...last, text: words.slice(0, i).join(' ') };
         return copy;
       });
       if (i >= words.length) clearInterval(animRef.current);
@@ -102,11 +268,10 @@ export default function Dashboard() {
         body:    JSON.stringify({ message: msg, conversationHistory: history, userId }),
       });
 
-      // Vercel can return plain-text errors on timeout — always parse safely
       const raw = await res.text();
       let data;
       try { data = JSON.parse(raw); }
-      catch { throw new Error('The request timed out. Your stylist is still warming up — try again in a moment.'); }
+      catch { throw new Error('The request timed out. Try again in a moment.'); }
 
       if (data.error) throw new Error(data.error);
 
@@ -114,11 +279,11 @@ export default function Dashboard() {
       stopPhraseLoop();
       setLoading(false);
 
-      // Save full conversation to localStorage
       setMessages(prev => {
-        const newMsgs = [...prev, { role: 'ai', text: data.reply }];
+        const newMsg  = { role: 'ai', text: data.reply, outfits: data.outfits ?? null };
+        const newMsgs = [...prev, newMsg];
         if (userId) localStorage.setItem(`chat_${userId}`, JSON.stringify({ messages: newMsgs, history: data.history }));
-        return [...prev, { role: 'ai', text: '' }];
+        return [...prev, { role: 'ai', text: '', outfits: data.outfits ?? null }];
       });
 
       animateLastMessage(data.reply);
@@ -126,12 +291,13 @@ export default function Dashboard() {
     } catch (err) {
       stopPhraseLoop();
       setLoading(false);
-      setMessages(m => [...m, { role: 'ai', text: `Error: ${err.message}` }]);
+      setMessages(m => [...m, { role: 'ai', text: `Something went wrong: ${err.message}` }]);
     }
   };
 
   const clearChat = () => {
-    if (animRef.current) clearInterval(animRef.current);
+    if (animRef.current)   clearInterval(animRef.current);
+    if (phraseRef.current) clearInterval(phraseRef.current);
     setMessages([]);
     setHistory([]);
     if (userId) localStorage.removeItem(`chat_${userId}`);
@@ -170,53 +336,72 @@ export default function Dashboard() {
 
       {/* Message thread */}
       {!isEmpty && (
-        <div className="flex-1 overflow-y-auto px-6 py-8 space-y-4">
-          {/* Clear chat button */}
-          <div className="flex justify-end mb-2">
-            <button onClick={clearChat} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition">
-              <Trash2 className="w-3 h-3" /> Clear chat
-            </button>
-          </div>
+        <div className="flex-1 overflow-y-auto px-4 py-8">
+          <div className="max-w-4xl mx-auto space-y-4">
+            <div className="flex justify-end mb-2">
+              <button onClick={clearChat} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition">
+                <Trash2 className="w-3 h-3" /> Clear chat
+              </button>
+            </div>
 
-          {messages.map((msg, i) => (
-            <motion.div key={i}
-              initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.2 }}
-              className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-            >
-              <div className={`max-w-[70%] px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
-                msg.role === 'user'
-                  ? 'bg-foreground text-background'
-                  : 'bg-card border border-border text-foreground'
-              }`}>
-                {msg.text}
-                {msg.role === 'ai' && msg.text === '' && (
-                  <span className="inline-block w-1.5 h-3.5 bg-primary animate-pulse ml-0.5" />
+            {messages.map((msg, i) => (
+              <motion.div key={i}
+                initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.2 }}
+                className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+              >
+                {msg.role === 'user' ? (
+                  <div className="max-w-[70%] px-4 py-3 text-sm leading-relaxed bg-foreground text-background">
+                    {msg.text}
+                  </div>
+                ) : (
+                  <div className="w-full">
+                    {/* Text bubble */}
+                    {msg.text && (
+                      <div className="bg-card border border-border px-4 py-3 text-sm leading-relaxed text-foreground whitespace-pre-wrap inline-block max-w-[75%]">
+                        {msg.text}
+                        {msg.text === '' && (
+                          <span className="inline-block w-1.5 h-3.5 bg-primary animate-pulse ml-0.5" />
+                        )}
+                      </div>
+                    )}
+                    {/* Cursor when empty and loading */}
+                    {!msg.text && !msg.outfits && (
+                      <div className="bg-card border border-border px-4 py-3 inline-block">
+                        <span className="inline-block w-1.5 h-3.5 bg-primary animate-pulse" />
+                      </div>
+                    )}
+                    {/* Outfit cards */}
+                    {msg.outfits && (
+                      <OutfitCarousel outfits={msg.outfits} onSendMessage={send} />
+                    )}
+                  </div>
                 )}
-              </div>
-            </motion.div>
-          ))}
+              </motion.div>
+            ))}
 
-          {loading && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
-              <div className="bg-card border border-border px-4 py-3 flex gap-1.5 items-center">
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
-                <AnimatePresence mode="wait">
-                  <motion.span
-                    key={loadingPhrase}
-                    initial={{ opacity: 0, y: 4 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -4 }}
-                    transition={{ duration: 0.3 }}
-                    className="text-xs text-muted-foreground"
-                  >
-                    {loadingPhrase}
-                  </motion.span>
-                </AnimatePresence>
-              </div>
-            </motion.div>
-          )}
-          <div ref={bottomRef} />
+            {loading && (
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
+                <div className="bg-card border border-border px-4 py-3 flex gap-1.5 items-center">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
+                  <AnimatePresence mode="wait">
+                    <motion.span
+                      key={loadingPhrase}
+                      initial={{ opacity: 0, y: 4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -4 }}
+                      transition={{ duration: 0.3 }}
+                      className="text-xs text-muted-foreground"
+                    >
+                      {loadingPhrase}
+                    </motion.span>
+                  </AnimatePresence>
+                </div>
+              </motion.div>
+            )}
+
+            <div ref={bottomRef} />
+          </div>
         </div>
       )}
 
