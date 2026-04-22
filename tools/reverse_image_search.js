@@ -12,11 +12,19 @@ export async function reverseImageSearch(imageUrl) {
   url.searchParams.set('engine',  'google_lens');
   url.searchParams.set('url',     imageUrl);
   url.searchParams.set('api_key', API_KEY);
+  url.searchParams.set('hl',      'en');
+  url.searchParams.set('gl',      'us');
+  url.searchParams.set('no_cache', 'true');
 
   const res  = await fetch(url.toString(), { signal: AbortSignal.timeout(20000) });
   const data = await res.json();
 
   if (data.error) throw new Error(`SerpAPI Google Lens: ${data.error}`);
+
+  console.log('[lens] response keys:', Object.keys(data));
+  console.log('[lens] shopping_results count:', data.shopping_results?.length ?? 0);
+  console.log('[lens] visual_matches count:', data.visual_matches?.length ?? 0);
+  console.log('[lens] first shopping result:', JSON.stringify(data.shopping_results?.[0] ?? null));
 
   // Explicit shopping results
   const fromShopping = (data.shopping_results ?? []).map(item => ({
