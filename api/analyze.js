@@ -21,10 +21,33 @@ async function inBatches(items, fn, size = 3) {
   return results;
 }
 
+/**
+ * Downloads an image and re-uploads it to Supabase Storage so that
+ * SerpAPI (and any other external service) can fetch it reliably.
+ * Pinterest CDN blocks most bots — serving from our own storage fixes this.
+ */
+async function proxyImageToStorage(imageUrl) {
+  const res = await fetch(imageUrl, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+    signal:  AbortSignal.timeout(10000),
+  });
+  if (!res.ok) throw new Error(`Image fetch failed: ${res.status}`);
+
+  const arrayBuffer = await res.arrayBuffer();
+  const buffer      = Buffer.from(arrayBuffer);
+  const contentType = res.headers.get('content-type') ?? 'image/jpeg';
+  const ext         = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
+  const path        = `pins/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+
+  const { error } = await supabase.storage.from('wardrobe').upload(path, buffer, { contentType, upsert: true });
+  if (error) throw error;
+
+  const { data: { publicUrl } } = supabase.storage.from('wardrobe').getPublicUrl(path);
+  return publicUrl;
+}
+
 // ── Wardrobe analysis ─────────────────────────────────────────────
 async function analyzeWardrobe(userId) {
-  // Fetch all items then filter in JS — avoids silent failure when style_category
-  // column doesn't exist yet (Supabase returns null data, not an empty array).
   const { data: allItems } = await supabase
     .from('wardrobe_items')
     .select('*')
@@ -60,7 +83,6 @@ async function analyzePinterest(userId, boardUrl) {
     return { error: scraped.error, userMessage: scraped.userMessage, analyzed: 0 };
   }
 
-  // Remove only the pins from THIS board — other boards' pins are preserved
   await supabase.from('aspiration_items')
     .delete()
     .eq('user_id', userId)
@@ -68,36 +90,45 @@ async function analyzePinterest(userId, boardUrl) {
     .eq('source_url', boardUrl);
 
   let analyzed = 0;
-  // Deduplicate by normalizing size variants, then cap at 10 pins
   const uniqueImages = [...new Set(scraped.images.map(u => u.replace(/\/(?:474x|236x|originals)\//, '/736x/')))];
   const toProcess = uniqueImages.slice(0, 10);
 
   await inBatches(toProcess, async (imageUrl) => {
     let styleResult = null;
     let shopResults = null;
+    let storedUrl   = imageUrl;
 
-    // Analyze style
+    // Analyze style first — Claude downloads the image as Googlebot so this works even
+    // if Pinterest blocks regular bots
     try {
       styleResult = await analyzeImageStyle(imageUrl, 'aspiration');
       if (styleResult.skip_reason) return;
     } catch { return; }
 
-    // Reverse image search
+    // Proxy image to Supabase Storage so SerpAPI can reliably fetch it
     try {
-      shopResults = await reverseImageSearch(imageUrl);
+      storedUrl = await proxyImageToStorage(imageUrl);
+    } catch {
+      storedUrl = imageUrl; // fall back to Pinterest URL
+    }
+
+    // Google Lens — pass the Supabase URL, not the Pinterest CDN URL
+    try {
+      shopResults = await reverseImageSearch(storedUrl);
     } catch { shopResults = null; }
 
     await supabase.from('aspiration_items').insert({
-      user_id:         userId,
-      source_type:     'pinterest',
-      source_url:      boardUrl,
-      image_url:       imageUrl,
-      colors:          styleResult.dominant_colors,
-      fit_type:        styleResult.fit_type,
-      formality_score: styleResult.formality_score,
-      style_category:  styleResult.style_category,
-      brand:           styleResult.brand,
-      shopping_results: shopResults
+      user_id:          userId,
+      source_type:      'pinterest',
+      source_url:       boardUrl,
+      image_url:        storedUrl,  // stored as Supabase URL from now on
+      colors:           styleResult.dominant_colors,
+      fit_type:         styleResult.fit_type,
+      formality_score:  styleResult.formality_score,
+      style_category:   styleResult.style_category,
+      brand:            styleResult.brand,
+      individual_items: styleResult.individual_items ?? null,
+      shopping_results: shopResults?.shopping_results?.length
         ? { shopping: shopResults.shopping_results, visual: shopResults.visual_matches }
         : null,
     });
@@ -114,7 +145,6 @@ async function analyzePinterest(userId, boardUrl) {
 
 // ── Handler ───────────────────────────────────────────────────────
 export default async function handler(req, res) {
-  // DELETE /api/analyze — remove a single aspiration (shoppable pin) item
   if (req.method === 'DELETE') {
     const { pinId } = req.body;
     if (!pinId) return res.status(400).json({ error: 'pinId required' });
@@ -139,7 +169,6 @@ export default async function handler(req, res) {
       if (result.error) return res.status(200).json({ success: false, ...result });
     }
 
-    // Always re-synthesize Style DNA after analysis
     const dna = await synthesizeStyleDna(userId);
 
     return res.status(200).json({

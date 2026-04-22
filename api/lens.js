@@ -1,20 +1,33 @@
 import { createClient } from '@supabase/supabase-js';
 import { reverseImageSearch } from '../tools/reverse_image_search.js';
-import { searchProducts }     from '../tools/search_products.js';
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
 );
 
-// Build a style-aware fallback query from the pin's stored style attributes
-function buildFallbackQuery(pin) {
-  const parts = [];
-  if (pin.fit_type)        parts.push(pin.fit_type);
-  if (pin.style_category)  parts.push(pin.style_category.replace(/_/g, ' '));
-  if (pin.colors?.length)  parts.push(pin.colors[0]);
-  parts.push('outfit');
-  return parts.join(' ');
+/**
+ * Downloads an image and re-uploads it to Supabase Storage so SerpAPI
+ * can fetch it. Pinterest CDN blocks most external bots.
+ */
+async function proxyImageToStorage(imageUrl) {
+  const res = await fetch(imageUrl, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+    signal:  AbortSignal.timeout(10000),
+  });
+  if (!res.ok) throw new Error(`Image fetch failed: ${res.status}`);
+
+  const arrayBuffer = await res.arrayBuffer();
+  const buffer      = Buffer.from(arrayBuffer);
+  const contentType = res.headers.get('content-type') ?? 'image/jpeg';
+  const ext         = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
+  const path        = `pins/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+
+  const { error } = await supabase.storage.from('wardrobe').upload(path, buffer, { contentType, upsert: true });
+  if (error) throw error;
+
+  const { data: { publicUrl } } = supabase.storage.from('wardrobe').getPublicUrl(path);
+  return publicUrl;
 }
 
 export default async function handler(req, res) {
@@ -24,64 +37,42 @@ export default async function handler(req, res) {
   if (!imageUrl || !userId) return res.status(400).json({ error: 'imageUrl and userId required' });
 
   try {
-    let shopResults = null;
-
-    // --- Try Google Lens first ---
+    // Proxy the image through Supabase so SerpAPI can fetch it
+    let fetchUrl = imageUrl;
     try {
-      const lens = await reverseImageSearch(imageUrl);
-      if (lens.shopping_results?.length > 0) {
-        shopResults = {
-          shopping: lens.shopping_results,
-          visual:   lens.visual_matches,
-        };
-      }
-    } catch (lensErr) {
-      console.warn('[lens] Google Lens failed:', lensErr.message);
-    }
-
-    // --- Fallback: style-based product search ---
-    if (!shopResults && pinId) {
-      const { data: pin } = await supabase
-        .from('aspiration_items')
-        .select('style_category, fit_type, colors')
-        .eq('id', pinId)
-        .eq('user_id', userId)
-        .single();
-
-      if (pin) {
-        const query    = buildFallbackQuery(pin);
-        const products = await searchProducts({ query, category: 'tops' });
-        // Run a few category searches in parallel for a fuller result set
-        const [tops, bottoms, shoes] = await Promise.allSettled([
-          searchProducts({ query: `${pin.fit_type ?? ''} ${pin.style_category?.replace(/_/g, ' ') ?? ''} top shirt`.trim() }),
-          searchProducts({ query: `${pin.fit_type ?? ''} ${pin.style_category?.replace(/_/g, ' ') ?? ''} pants trousers`.trim() }),
-          searchProducts({ query: `${pin.style_category?.replace(/_/g, ' ') ?? 'casual'} sneakers shoes`.trim() }),
-        ]);
-
-        const fallbackProducts = [
-          ...(tops.status    === 'fulfilled' ? tops.value    : []),
-          ...(bottoms.status === 'fulfilled' ? bottoms.value : []),
-          ...(shoes.status   === 'fulfilled' ? shoes.value   : []),
-        ].map(p => ({
-          name:        p.name,
-          price:       p.price,
-          store:       p.store,
-          product_url: p.product_url,
-          image_url:   p.image_url,
-          brand:       p.brand ?? null,
-        }));
-
-        if (fallbackProducts.length > 0) {
-          shopResults = { shopping: fallbackProducts, visual: [], isFallback: true };
+      // Only proxy if it's a third-party URL (not already on our storage)
+      if (!imageUrl.includes('supabase')) {
+        fetchUrl = await proxyImageToStorage(imageUrl);
+        // Update the pin's stored image_url to the Supabase URL for future use
+        if (pinId) {
+          await supabase
+            .from('aspiration_items')
+            .update({ image_url: fetchUrl })
+            .eq('id', pinId)
+            .eq('user_id', userId);
         }
       }
+    } catch (proxyErr) {
+      console.warn('[lens] Image proxy failed, using original URL:', proxyErr.message);
     }
 
-    if (!shopResults) {
-      return res.status(200).json({ shopping_results: { shopping: [], visual: [] } });
+    // Run Google Lens with the proxied URL
+    const lens = await reverseImageSearch(fetchUrl);
+    const hasResults = lens.shopping_results?.length > 0;
+
+    if (!hasResults) {
+      return res.status(200).json({
+        shopping_results: { shopping: [], visual: [] },
+        debug: 'Google Lens returned no results for this image',
+      });
     }
 
-    // Cache back to the pin row
+    const shopResults = {
+      shopping: lens.shopping_results,
+      visual:   lens.visual_matches,
+    };
+
+    // Cache results on the pin row
     if (pinId) {
       await supabase
         .from('aspiration_items')
