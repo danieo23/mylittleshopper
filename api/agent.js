@@ -190,59 +190,56 @@ async function runAgent(message, conversationHistory, userId) {
 
   // Sonnet for the tool-use loop: same reasoning quality, 3-4x faster than Opus
   const LOOP_MODEL  = 'claude-sonnet-4-6';
-  const LOOP_TOKENS = 2048; // tool calls don't need long output
+  const LOOP_TOKENS = 4096;
 
-  let response = await client.messages.create({
-    model:      LOOP_MODEL,
-    max_tokens: LOOP_TOKENS,
-    system:     buildSystemPrompt(userProfile),
-    tools:      TOOLS,
-    messages,
-  });
-
-  let lastOutfits = null;
-  let needsOutfits = false; // flips true once search_products has been called
+  let lastOutfits  = null;
+  let needsOutfits = false; // true once search_products has fired
   const MAX_TURNS  = 12;
   let turns        = 0;
 
-  // Agentic loop — run tool calls in parallel per turn, nudge Claude if it narrates mid-chain
-  while (turns++ < MAX_TURNS) {
-    if (response.stop_reason === 'tool_use') {
-      const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
+  // tool_choice: 'any' forces Claude to keep using tools mid-pipeline.
+  // This prevents it from emitting an intermediate text message between
+  // search_products and build_outfits, which would corrupt the message history.
+  const toolChoice = () =>
+    needsOutfits && !lastOutfits ? { type: 'any' } : { type: 'auto' };
 
-      if (toolUseBlocks.some(b => b.name === 'search_products')) needsOutfits = true;
+  let response = await client.messages.create({
+    model:        LOOP_MODEL,
+    max_tokens:   LOOP_TOKENS,
+    system:       buildSystemPrompt(userProfile),
+    tools:        TOOLS,
+    tool_choice:  toolChoice(),
+    messages,
+  });
 
-      // Run all tool calls for this turn in parallel
-      const toolResults = await Promise.all(
-        toolUseBlocks.map(async (block) => {
-          try {
-            const result = await executeTool(block.name, block.input, userId, userProfile);
-            if (block.name === 'build_outfits') lastOutfits = result;
-            return { type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) };
-          } catch (err) {
-            return { type: 'tool_result', tool_use_id: block.id, content: `Error: ${err.message}`, is_error: true };
-          }
-        })
-      );
+  // Agentic loop — run all tool calls per turn in parallel
+  while (turns++ < MAX_TURNS && response.stop_reason === 'tool_use') {
+    const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
+    if (!toolUseBlocks.length) break;
 
-      messages.push({ role: 'assistant', content: response.content });
-      messages.push({ role: 'user',      content: toolResults });
+    if (toolUseBlocks.some(b => b.name === 'search_products')) needsOutfits = true;
 
-    } else {
-      // Claude emitted text — if products were searched but outfits not built yet, nudge it
-      if (needsOutfits && !lastOutfits) {
-        messages.push({ role: 'assistant', content: response.content });
-        messages.push({ role: 'user', content: 'Call score_products then build_outfits now. Do not write any text first.' });
-      } else {
-        break; // genuine final reply
-      }
-    }
+    const toolResults = await Promise.all(
+      toolUseBlocks.map(async (block) => {
+        try {
+          const result = await executeTool(block.name, block.input, userId, userProfile);
+          if (block.name === 'build_outfits') lastOutfits = result;
+          return { type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) };
+        } catch (err) {
+          return { type: 'tool_result', tool_use_id: block.id, content: `Error: ${err.message}`, is_error: true };
+        }
+      })
+    );
+
+    messages.push({ role: 'assistant', content: response.content });
+    messages.push({ role: 'user',      content: toolResults });
 
     response = await client.messages.create({
-      model:      LOOP_MODEL,
-      max_tokens: LOOP_TOKENS,
-      system:     buildSystemPrompt(userProfile),
-      tools:      TOOLS,
+      model:       LOOP_MODEL,
+      max_tokens:  LOOP_TOKENS,
+      system:      buildSystemPrompt(userProfile),
+      tools:       TOOLS,
+      tool_choice: toolChoice(),
       messages,
     });
   }
