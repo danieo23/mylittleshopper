@@ -68,11 +68,19 @@ Only return the JSON array. No other text.`;
   // Enrich with multiplier scores and full product details
   const allProducts = Object.values(scoredProducts).flat();
 
+  // Fuzzy match: check both directions (search title may be longer than Claude's name)
+  // and fall back to significant word overlap so minor paraphrasing doesn't drop items.
+  function matchProduct(searchName, claudeName) {
+    const a = searchName.toLowerCase().replace(/[^a-z0-9\s]/g, '');
+    const b = claudeName.toLowerCase().replace(/[^a-z0-9\s]/g, '');
+    if (a.includes(b.slice(0, 30)) || b.includes(a.slice(0, 30))) return true;
+    const words = b.split(/\s+/).filter(w => w.length > 3);
+    return words.length > 0 && words.filter(w => a.includes(w)).length >= Math.min(2, words.length);
+  }
+
   return outfits.map(outfit => {
     const resolvedItems = outfit.items.map(item => {
-      const product = allProducts.find(p =>
-        p.name.toLowerCase().includes(item.product_name.toLowerCase().slice(0, 20))
-      );
+      const product = allProducts.find(p => matchProduct(p.name, item.product_name));
       return { ...item, product: product ?? null };
     }).filter(i => i.product);
 

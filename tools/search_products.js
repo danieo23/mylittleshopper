@@ -31,11 +31,10 @@ export async function searchProducts({ query, category, maxPrice, stores = [] })
   throw new Error(`Unknown SHOPPING_API_PROVIDER: ${PROVIDER}`);
 }
 
-async function _searchViaSerpApi({ query, maxPrice, stores }) {
-  // Google Shopping doesn't support site: operators — append store names as
-  // search terms instead so they act as merchant hints without causing errors.
-  const storeHint = stores.length > 0 ? ` ${stores.slice(0, 2).join(' ')}` : '';
-  const fullQuery = `${query}${storeHint}`;
+async function _searchViaSerpApi({ query, maxPrice }) {
+  // No store filtering — Google Shopping naturally surfaces diverse retailers.
+  // Filtering by store name in the query narrows results too aggressively.
+  const fullQuery = query;
 
   const url = new URL('https://serpapi.com/search');
   url.searchParams.set('engine',  'google_shopping');
