@@ -16,7 +16,7 @@ export async function reverseImageSearch(imageUrl) {
   url.searchParams.set('gl',      'us');
   url.searchParams.set('no_cache', 'true');
 
-  const res  = await fetch(url.toString(), { signal: AbortSignal.timeout(20000) });
+  const res  = await fetch(url.toString(), { signal: AbortSignal.timeout(15000) });
   const data = await res.json();
 
   if (data.error) throw new Error(`SerpAPI Google Lens: ${data.error}`);
