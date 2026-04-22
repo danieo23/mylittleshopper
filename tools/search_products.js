@@ -32,8 +32,10 @@ export async function searchProducts({ query, category, maxPrice, stores = [] })
 }
 
 async function _searchViaSerpApi({ query, maxPrice, stores }) {
-  const storeFilter = stores.length > 0 ? ` site:${stores.map(s => s.toLowerCase().replace(/\s/g, '') + '.com').join(' OR site:')}` : '';
-  const fullQuery   = `${query}${storeFilter}`;
+  // Google Shopping doesn't support site: operators — append store names as
+  // search terms instead so they act as merchant hints without causing errors.
+  const storeHint = stores.length > 0 ? ` ${stores.slice(0, 2).join(' ')}` : '';
+  const fullQuery = `${query}${storeHint}`;
 
   const url = new URL('https://serpapi.com/search');
   url.searchParams.set('engine',  'google_shopping');
@@ -41,7 +43,7 @@ async function _searchViaSerpApi({ query, maxPrice, stores }) {
   url.searchParams.set('api_key', API_KEY);
   if (maxPrice) url.searchParams.set('price_max', String(maxPrice));
 
-  const res  = await fetch(url.toString(), { signal: AbortSignal.timeout(12000) });
+  const res  = await fetch(url.toString(), { signal: AbortSignal.timeout(20000) });
   const data = await res.json();
 
   if (data.error) throw new Error(`SerpAPI error: ${data.error}`);
