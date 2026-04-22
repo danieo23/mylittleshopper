@@ -214,16 +214,15 @@ async function runAgent(message, conversationHistory, userId) {
   const LOOP_MODEL  = 'claude-sonnet-4-6';
   const LOOP_TOKENS = 4096;
 
-  let lastOutfits  = null;
-  let needsOutfits = false; // true once search_products has fired
-  const MAX_TURNS  = 12;
-  let turns        = 0;
+  let lastOutfits      = null;
+  let hasSearchResults = false; // only true when search_products returned actual products
+  const MAX_TURNS      = 6;
+  let turns            = 0;
 
-  // tool_choice: 'any' forces Claude to keep using tools mid-pipeline.
-  // This prevents it from emitting an intermediate text message between
-  // search_products and build_outfits, which would corrupt the message history.
+  // tool_choice:'any' only when we have real results to build from.
+  // Using it when searches failed would trap Claude in a forced-tool retry loop.
   const toolChoice = () =>
-    needsOutfits && !lastOutfits ? { type: 'any' } : { type: 'auto' };
+    hasSearchResults && !lastOutfits ? { type: 'any' } : { type: 'auto' };
 
   let response = await client.messages.create({
     model:        LOOP_MODEL,
@@ -239,12 +238,13 @@ async function runAgent(message, conversationHistory, userId) {
     const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
     if (!toolUseBlocks.length) break;
 
-    if (toolUseBlocks.some(b => b.name === 'search_products')) needsOutfits = true;
-
     const toolResults = await Promise.all(
       toolUseBlocks.map(async (block) => {
         try {
           const result = await executeTool(block.name, block.input, userId, userProfile);
+          if (block.name === 'search_products' && Array.isArray(result) && result.length > 0) {
+            hasSearchResults = true;
+          }
           if (block.name === 'build_outfits') lastOutfits = result;
           return { type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) };
         } catch (err) {

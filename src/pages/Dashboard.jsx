@@ -291,7 +291,8 @@ export default function Dashboard() {
     } catch (err) {
       stopPhraseLoop();
       setLoading(false);
-      setMessages(m => [...m, { role: 'ai', text: `Something went wrong: ${err.message}` }]);
+      const errText = err.message || 'Something went wrong — please try again.';
+      setMessages(m => [...m, { role: 'ai', text: errText, isError: true }]);
     }
   };
 
@@ -358,14 +359,15 @@ export default function Dashboard() {
                   <div className="w-full">
                     {/* Text bubble */}
                     {msg.text && (
-                      <div className="bg-card border border-border px-4 py-3 text-sm leading-relaxed text-foreground whitespace-pre-wrap inline-block max-w-[75%]">
+                      <div className={`px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap inline-block max-w-[75%] ${
+                        msg.isError
+                          ? 'bg-destructive/10 border border-destructive/40 text-destructive'
+                          : 'bg-card border border-border text-foreground'
+                      }`}>
                         {msg.text}
-                        {msg.text === '' && (
-                          <span className="inline-block w-1.5 h-3.5 bg-primary animate-pulse ml-0.5" />
-                        )}
                       </div>
                     )}
-                    {/* Cursor when empty and loading */}
+                    {/* Cursor while animating empty reply */}
                     {!msg.text && !msg.outfits && (
                       <div className="bg-card border border-border px-4 py-3 inline-block">
                         <span className="inline-block w-1.5 h-3.5 bg-primary animate-pulse" />
