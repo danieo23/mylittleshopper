@@ -2,7 +2,6 @@ import { createClient } from '@supabase/supabase-js';
 import { analyzeImageStyle }  from '../tools/analyze_image_style.js';
 import { synthesizeStyleDna } from '../tools/synthesize_style_dna.js';
 import { scrapePublicImages } from '../tools/scrape_public_images.js';
-import { reverseImageSearch } from '../tools/reverse_image_search.js';
 
 export const config = { maxDuration: 120 };
 
@@ -91,46 +90,36 @@ async function analyzePinterest(userId, boardUrl) {
 
   let analyzed = 0;
   const uniqueImages = [...new Set(scraped.images.map(u => u.replace(/\/(?:474x|236x|originals)\//, '/736x/')))];
-  const toProcess = uniqueImages.slice(0, 10);
+  const toProcess = uniqueImages.slice(0, 6);
 
   await inBatches(toProcess, async (imageUrl) => {
     let styleResult = null;
-    let shopResults = null;
     let storedUrl   = imageUrl;
 
-    // Analyze style first — Claude downloads the image as Googlebot so this works even
-    // if Pinterest blocks regular bots
     try {
       styleResult = await analyzeImageStyle(imageUrl, 'aspiration');
       if (styleResult.skip_reason) return;
     } catch { return; }
 
-    // Proxy image to Supabase Storage so SerpAPI can reliably fetch it
+    // Proxy image to Supabase Storage so SerpAPI can reliably fetch it on demand
     try {
       storedUrl = await proxyImageToStorage(imageUrl);
     } catch {
-      storedUrl = imageUrl; // fall back to Pinterest URL
+      storedUrl = imageUrl;
     }
-
-    // Google Lens — pass the Supabase URL, not the Pinterest CDN URL
-    try {
-      shopResults = await reverseImageSearch(storedUrl);
-    } catch { shopResults = null; }
 
     await supabase.from('aspiration_items').insert({
       user_id:          userId,
       source_type:      'pinterest',
       source_url:       boardUrl,
-      image_url:        storedUrl,  // stored as Supabase URL from now on
+      image_url:        storedUrl,
       colors:           styleResult.dominant_colors,
       fit_type:         styleResult.fit_type,
       formality_score:  styleResult.formality_score,
       style_category:   styleResult.style_category,
       brand:            styleResult.brand,
       individual_items: styleResult.individual_items ?? null,
-      shopping_results: shopResults?.shopping_results?.length
-        ? { shopping: shopResults.shopping_results, visual: shopResults.visual_matches }
-        : null,
+      shopping_results: null,
     });
     analyzed++;
   }, 3);
