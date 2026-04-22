@@ -30,8 +30,10 @@ async function analyzeWardrobe(userId) {
     .select('*')
     .eq('user_id', userId);
 
+  const total = allItems?.length ?? 0;
+  console.log(`[analyzeWardrobe] userId=${userId} total=${total} items:`, allItems?.map(i => ({ id: i.id, style_category: i.style_category })));
   const items = (allItems ?? []).filter(i => !i.style_category);
-  if (!items.length) return { analyzed: 0 };
+  if (!items.length) return { analyzed: 0, total, debug: 'all items already have style_category set' };
 
   let analyzed = 0;
   await inBatches(items, async (item) => {
