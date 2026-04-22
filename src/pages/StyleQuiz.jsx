@@ -4,6 +4,7 @@ import { ArrowRight, Check, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { base44 } from '@/api/client';
 import { QUIZ_CATEGORIES, mapSelectionsToStyleDna } from '@/data/quizData';
+import { QUIZ_IMAGE_META } from '@/data/quizImageMeta';
 
 const COLOR_PALETTES = [
   { key: 'neutrals',   label: 'Neutrals',     swatches: ['#F5F0E8', '#D4C9B0', '#8B7355', '#3D2B1F'] },
@@ -20,6 +21,7 @@ const COLOR_STEP  = QUIZ_CATEGORIES.length;
 
 function StyleCard({ item, selected, onToggle }) {
   const [imgError, setImgError] = useState(false);
+  const objectPosition = QUIZ_IMAGE_META[item.id]?.objectPosition ?? 'center center';
 
   return (
     <button
@@ -35,6 +37,7 @@ function StyleCard({ item, selected, onToggle }) {
             src={item.image}
             alt={item.label}
             onError={() => setImgError(true)}
+            style={{ objectPosition }}
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
           />
         ) : (
