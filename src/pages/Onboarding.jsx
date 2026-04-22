@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { ArrowRight, Check, Upload, X, Loader2 } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { ArrowRight, Check, Upload, X, Loader2, Plus, ChevronDown } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { base44 } from '@/api/client';
@@ -55,6 +55,76 @@ const PHOTO_CATEGORIES = [
 
 // ─── Step labels ──────────────────────────────────────────────────
 const STEPS = ['Budget', 'Stores', 'Vibe', 'Colors', 'Photos', 'Details', 'Done'];
+
+// ─── Stores dropdown (reused from StyleVault) ─────────────────────
+const ALL_STORES = [
+  'Zara', 'H&M', 'ASOS', 'Uniqlo', 'Urban Outfitters', 'Mango', 'COS', '& Other Stories',
+  'Pull&Bear', 'Massimo Dutti', 'Nordstrom', "Macy's", "Bloomingdale's", 'Saks Fifth Avenue',
+  'Revolve', 'SSENSE', 'Farfetch', 'Net-a-Porter', 'Nike', 'Adidas', 'New Balance',
+  'Lululemon', 'Vuori', 'Everlane', 'Reformation', 'Banana Republic', 'J.Crew', 'Gap',
+  'Club Monaco', 'Theory', 'Rag & Bone', 'Acne Studios', 'A.P.C.', 'Ralph Lauren',
+  'Tommy Hilfiger', 'Calvin Klein', 'Carhartt WIP', 'Stüssy', 'Supreme', 'Palace',
+  'Noah', 'Kith', 'Free People', 'Anthropologie', 'Depop', 'ThredUp', 'Poshmark',
+  'Shein', 'Boohoo', 'Target', 'Pacsun', 'Abercrombie', 'American Eagle', "Levi's",
+];
+
+function StoresDropdown({ selected, onChange }) {
+  const [open, setOpen]     = useState(false);
+  const [search, setSearch] = useState('');
+  const ref                 = useRef(null);
+
+  useEffect(() => {
+    const h = (e) => { if (!ref.current?.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, []);
+
+  const filtered    = ALL_STORES.filter(s => s.toLowerCase().includes(search.toLowerCase()) && !selected.includes(s));
+  const canAddCustom = search.trim() && !ALL_STORES.includes(search.trim()) && !selected.includes(search.trim());
+  const add  = (s)  => { onChange([...selected, s]); setSearch(''); };
+  const remove = (s) => onChange(selected.filter(x => x !== s));
+
+  return (
+    <div ref={ref} className="relative">
+      {selected.length > 0 && (
+        <div className="flex flex-wrap gap-2 mb-3">
+          {selected.map(s => (
+            <span key={s} className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-primary text-primary text-[11px] uppercase tracking-wider">
+              {s} <button onClick={() => remove(s)}><X className="w-3 h-3" /></button>
+            </span>
+          ))}
+        </div>
+      )}
+      <button onClick={() => setOpen(o => !o)}
+        className="inline-flex items-center gap-2 px-4 py-2.5 border border-border text-muted-foreground text-sm hover:text-foreground hover:border-foreground/40 transition">
+        <Plus className="w-3.5 h-3.5" /> Add stores <ChevronDown className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 z-50 w-72 bg-card border border-border shadow-lg">
+          <div className="p-2 border-b border-border">
+            <input autoFocus type="text" value={search} onChange={e => setSearch(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && canAddCustom) add(search.trim()); }}
+              placeholder="Search or add a store…"
+              className="w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none" />
+          </div>
+          <div className="max-h-52 overflow-y-auto py-1">
+            {canAddCustom && (
+              <button onClick={() => add(search.trim())}
+                className="w-full text-left px-3 py-2 text-xs text-primary hover:bg-primary/10 transition flex items-center gap-2">
+                <Plus className="w-3 h-3" /> Add "{search.trim()}"
+              </button>
+            )}
+            {filtered.map(s => (
+              <button key={s} onClick={() => add(s)}
+                className="w-full text-left px-3 py-2 text-sm text-foreground hover:bg-secondary transition">{s}</button>
+            ))}
+            {!filtered.length && !canAddCustom && <p className="px-3 py-2 text-xs text-muted-foreground">No stores found</p>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────
 function TagGrid({ options, selected, onToggle, cols = 'flex flex-wrap' }) {
@@ -213,13 +283,11 @@ export default function Onboarding() {
             <div>
               <h2 className="font-serif text-3xl tracking-tight mb-1">Favorite stores?</h2>
               <p className="text-sm text-muted-foreground mb-8">Pick every store you shop at or would like to. Your shopper checks these first.</p>
-              <div className="space-y-6 mb-8">
-                {Object.entries(STORES).map(([category, stores]) => (
-                  <div key={category}>
-                    <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground mb-3">{category}</div>
-                    <TagGrid options={stores} selected={data.favorite_stores} onToggle={v => toggle('favorite_stores', v)} />
-                  </div>
-                ))}
+              <div className="mb-8">
+                <StoresDropdown
+                  selected={data.favorite_stores}
+                  onChange={v => setData(p => ({ ...p, favorite_stores: v }))}
+                />
               </div>
               <button onClick={next} className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 text-sm hover:opacity-90 transition">
                 Continue <ArrowRight className="w-3.5 h-3.5" />
@@ -340,37 +408,24 @@ export default function Onboarding() {
               <p className="text-sm text-muted-foreground mb-8">Optional — but the more your shopper knows, the better the fit.</p>
 
               <div className="space-y-5 mb-8">
-                <div>
-                  <label className="block text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Tops / Shirts size</label>
-                  <select
-                    value={data.sizes.tops}
-                    onChange={e => setData(p => ({ ...p, sizes: { ...p.sizes, tops: e.target.value } }))}
-                    className="w-full bg-card border border-border px-4 py-3 text-sm text-foreground outline-none focus:border-foreground/40"
-                  >
-                    <option value="">Select</option>
-                    {['XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL'].map(s => <option key={s}>{s}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Bottoms / Pants size</label>
-                  <input
-                    type="text"
-                    value={data.sizes.bottoms}
-                    onChange={e => setData(p => ({ ...p, sizes: { ...p.sizes, bottoms: e.target.value } }))}
-                    placeholder="e.g. 32x30, M, 8"
-                    className="w-full bg-card border border-border px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-foreground/40"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Shoe size</label>
-                  <input
-                    type="text"
-                    value={data.sizes.shoes}
-                    onChange={e => setData(p => ({ ...p, sizes: { ...p.sizes, shoes: e.target.value } }))}
-                    placeholder="e.g. US 10, EU 44"
-                    className="w-full bg-card border border-border px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-foreground/40"
-                  />
-                </div>
+                {[
+                  { key: 'tops',      label: 'Tops / Shirts',    options: ['XXS', 'XS', 'S', 'M', 'L', 'XL', '2XL', '3XL'] },
+                  { key: 'bottoms',   label: 'Bottoms / Pants',  options: ['24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34', '36', '38', '40', 'XS', 'S', 'M', 'L', 'XL', '2XL'] },
+                  { key: 'shoes',     label: 'Shoes (US)',        options: ['5', '5.5', '6', '6.5', '7', '7.5', '8', '8.5', '9', '9.5', '10', '10.5', '11', '11.5', '12', '12.5', '13', '14', '15'] },
+                  { key: 'outerwear', label: 'Outerwear / Coats', options: ['XXS', 'XS', 'S', 'M', 'L', 'XL', '2XL', '3XL'] },
+                ].map(({ key, label, options }) => (
+                  <div key={key}>
+                    <label className="block text-[11px] uppercase tracking-wider text-muted-foreground mb-2">{label}</label>
+                    <select
+                      value={data.sizes[key] ?? ''}
+                      onChange={e => setData(p => ({ ...p, sizes: { ...p.sizes, [key]: e.target.value } }))}
+                      className="w-full bg-card border border-border px-4 py-3 text-sm text-foreground outline-none focus:border-foreground/40 cursor-pointer"
+                    >
+                      <option value="">Select size</option>
+                      {options.map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  </div>
+                ))}
                 <div>
                   <label className="block text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Pinterest board URL</label>
                   <input

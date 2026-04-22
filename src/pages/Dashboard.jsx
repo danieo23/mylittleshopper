@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ArrowRight, ShoppingBag, Loader2 } from 'lucide-react';
+import { ArrowRight, ShoppingBag, Loader2, Trash2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { supabase } from '@/api/client';
 
@@ -10,17 +10,41 @@ const SUGGESTED = [
   'I have a job interview next week, something sharp but relaxed.',
 ];
 
-export default function Dashboard() {
-  const [messages, setMessages]   = useState([]);
-  const [history, setHistory]     = useState([]);
-  const [input, setInput]         = useState('');
-  const [loading, setLoading]     = useState(false);
-  const [userId, setUserId]       = useState(null);
-  const bottomRef = useRef(null);
+const LOADING_PHRASES = [
+  'Lives are about to be changed…',
+  'Glow up in 3, 2, 1…',
+  'You are NOT ready for this.',
+  'The fits are incoming.',
+  'Scouring the internet for your next obsession…',
+  'Your future wardrobe is loading…',
+  'Hold tight, this is going to be good.',
+];
 
+export default function Dashboard() {
+  const [messages, setMessages] = useState([]);
+  const [history, setHistory]   = useState([]);
+  const [input, setInput]       = useState('');
+  const [loading, setLoading]         = useState(false);
+  const [loadingPhrase, setLoadingPhrase] = useState(LOADING_PHRASES[0]);
+  const [userId, setUserId]           = useState(null);
+  const bottomRef    = useRef(null);
+  const animRef      = useRef(null);
+  const phraseRef    = useRef(null);
+  const phraseIdxRef = useRef(0);
+
+  // Get user and load saved chat
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => {
-      if (user) setUserId(user.id);
+      if (!user) return;
+      setUserId(user.id);
+      const saved = localStorage.getItem(`chat_${user.id}`);
+      if (saved) {
+        try {
+          const { messages: m, history: h } = JSON.parse(saved);
+          if (m?.length) setMessages(m);
+          if (h?.length) setHistory(h);
+        } catch {}
+      }
     });
   }, []);
 
@@ -28,14 +52,48 @@ export default function Dashboard() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
 
+  // Clean up on unmount
+  useEffect(() => () => {
+    if (animRef.current)   clearInterval(animRef.current);
+    if (phraseRef.current) clearInterval(phraseRef.current);
+  }, []);
+
+  const startPhraseLoop = () => {
+    phraseIdxRef.current = 0;
+    setLoadingPhrase(LOADING_PHRASES[0]);
+    phraseRef.current = setInterval(() => {
+      phraseIdxRef.current = (phraseIdxRef.current + 1) % LOADING_PHRASES.length;
+      setLoadingPhrase(LOADING_PHRASES[phraseIdxRef.current]);
+    }, 3500);
+  };
+
+  const stopPhraseLoop = () => {
+    if (phraseRef.current) { clearInterval(phraseRef.current); phraseRef.current = null; }
+  };
+
+  const animateLastMessage = (fullText) => {
+    if (animRef.current) clearInterval(animRef.current);
+    const words = fullText.split(' ');
+    let i = 0;
+    animRef.current = setInterval(() => {
+      i++;
+      setMessages(m => {
+        const copy = [...m];
+        const last = copy[copy.length - 1];
+        if (last?.role === 'ai') copy[copy.length - 1] = { role: 'ai', text: words.slice(0, i).join(' ') };
+        return copy;
+      });
+      if (i >= words.length) clearInterval(animRef.current);
+    }, 18);
+  };
+
   const send = async (text) => {
     const msg = (text ?? input).trim();
     if (!msg || loading) return;
     setInput('');
-
-    const userMsg = { role: 'user', text: msg };
-    setMessages(m => [...m, userMsg]);
     setLoading(true);
+    startPhraseLoop();
+    setMessages(m => [...m, { role: 'user', text: msg }]);
 
     try {
       const res = await fetch('/api/agent', {
@@ -44,16 +102,39 @@ export default function Dashboard() {
         body:    JSON.stringify({ message: msg, conversationHistory: history, userId }),
       });
 
-      const data = await res.json();
+      // Vercel can return plain-text errors on timeout — always parse safely
+      const raw = await res.text();
+      let data;
+      try { data = JSON.parse(raw); }
+      catch { throw new Error('The request timed out. Your stylist is still warming up — try again in a moment.'); }
+
       if (data.error) throw new Error(data.error);
 
-      setMessages(m => [...m, { role: 'ai', text: data.reply }]);
       setHistory(data.history);
-    } catch (err) {
-      setMessages(m => [...m, { role: 'ai', text: `Error: ${err.message}` }]);
-    } finally {
+      stopPhraseLoop();
       setLoading(false);
+
+      // Save full conversation to localStorage
+      setMessages(prev => {
+        const newMsgs = [...prev, { role: 'ai', text: data.reply }];
+        if (userId) localStorage.setItem(`chat_${userId}`, JSON.stringify({ messages: newMsgs, history: data.history }));
+        return [...prev, { role: 'ai', text: '' }];
+      });
+
+      animateLastMessage(data.reply);
+
+    } catch (err) {
+      stopPhraseLoop();
+      setLoading(false);
+      setMessages(m => [...m, { role: 'ai', text: `Error: ${err.message}` }]);
     }
+  };
+
+  const clearChat = () => {
+    if (animRef.current) clearInterval(animRef.current);
+    setMessages([]);
+    setHistory([]);
+    if (userId) localStorage.removeItem(`chat_${userId}`);
   };
 
   const isEmpty = messages.length === 0;
@@ -90,18 +171,28 @@ export default function Dashboard() {
       {/* Message thread */}
       {!isEmpty && (
         <div className="flex-1 overflow-y-auto px-6 py-8 space-y-4">
+          {/* Clear chat button */}
+          <div className="flex justify-end mb-2">
+            <button onClick={clearChat} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition">
+              <Trash2 className="w-3 h-3" /> Clear chat
+            </button>
+          </div>
+
           {messages.map((msg, i) => (
             <motion.div key={i}
               initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.2 }}
               className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
             >
-              <div className={`max-w-[70%] px-4 py-3 text-sm leading-relaxed ${
+              <div className={`max-w-[70%] px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
                 msg.role === 'user'
                   ? 'bg-foreground text-background'
                   : 'bg-card border border-border text-foreground'
               }`}>
                 {msg.text}
+                {msg.role === 'ai' && msg.text === '' && (
+                  <span className="inline-block w-1.5 h-3.5 bg-primary animate-pulse ml-0.5" />
+                )}
               </div>
             </motion.div>
           ))}
@@ -110,7 +201,18 @@ export default function Dashboard() {
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
               <div className="bg-card border border-border px-4 py-3 flex gap-1.5 items-center">
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
-                <span className="text-xs text-muted-foreground">Shopping for you…</span>
+                <AnimatePresence mode="wait">
+                  <motion.span
+                    key={loadingPhrase}
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -4 }}
+                    transition={{ duration: 0.3 }}
+                    className="text-xs text-muted-foreground"
+                  >
+                    {loadingPhrase}
+                  </motion.span>
+                </AnimatePresence>
               </div>
             </motion.div>
           )}

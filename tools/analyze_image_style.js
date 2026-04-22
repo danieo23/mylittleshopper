@@ -26,33 +26,59 @@ Rules:
 - Be precise with hex codes — sample the actual image colors`;
 
 /**
+ * Fetch an HTTP image URL and return { media_type, base64 }.
+ * Needed because Anthropic's servers can't always reach third-party CDNs (e.g. Pinterest).
+ */
+async function fetchImageAsBase64(url) {
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!res.ok) throw new Error(`Image fetch failed: ${res.status} ${url}`);
+  const buffer      = await res.arrayBuffer();
+  const base64      = Buffer.from(buffer).toString('base64');
+  const contentType = res.headers.get('content-type') ?? 'image/jpeg';
+  const media_type  = contentType.split(';')[0].trim();
+  return { base64, media_type };
+}
+
+/**
+ * Build the Anthropic image source block for any image URL or data URL.
+ */
+async function buildImageSource(imageUrl) {
+  // Data URL — already base64, just split it
+  if (imageUrl.startsWith('data:')) {
+    const [header, base64] = imageUrl.split(',');
+    const media_type = header.replace('data:', '').replace(';base64', '');
+    return { type: 'base64', media_type, data: base64 };
+  }
+  // Remote URL — fetch and convert to base64
+  const { base64, media_type } = await fetchImageAsBase64(imageUrl);
+  return { type: 'base64', media_type, data: base64 };
+}
+
+/**
  * Analyzes a clothing image and extracts style attributes.
- * @param {string} imageUrl - Public URL of the image
+ * @param {string} imageUrl - HTTP URL, HTTPS URL, or data URL
  * @param {'wardrobe'|'aspiration'|'inspiration'} imageType
  * @returns {object} Structured style attributes
  */
 export async function analyzeImageStyle(imageUrl, imageType = 'wardrobe') {
+  const source = await buildImageSource(imageUrl);
+
   const response = await client.messages.create({
-    model: 'claude-opus-4-7',
+    model:      'claude-haiku-4-5-20251001', // faster + cheaper for bulk image analysis
     max_tokens: 1024,
     messages: [{
       role: 'user',
       content: [
-        {
-          type: 'image',
-          source: { type: 'url', url: imageUrl },
-        },
-        {
-          type: 'text',
-          text: ANALYSIS_PROMPT,
-        },
+        { type: 'image', source },
+        { type: 'text',  text: ANALYSIS_PROMPT },
       ],
     }],
   });
 
   const text = response.content[0].text.trim();
-
-  // Extract JSON from response
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('No JSON returned from image analysis');
 

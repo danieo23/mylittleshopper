@@ -1,70 +1,212 @@
-/**
- * Fetches image URLs from a public Pinterest board or image gallery URL.
- * Caps at 100 images. Flags private boards immediately.
- *
- * TODO: Pinterest does not have a public scraping API.
- * Recommended approach: use a headless browser service.
- * Options:
- *   - Browserless.io  (set BROWSERLESS_API_KEY in .env)
- *   - ScrapingBee     (set SCRAPINGBEE_API_KEY in .env)
- *   - Apify Pinterest scraper actor
- *
- * Until a scraping service is configured this returns a clear error
- * so the agent can ask the user to upload screenshots instead.
- */
-
-const BROWSERLESS_KEY = process.env.BROWSERLESS_API_KEY;
+const API_KEY = process.env.SHOPPING_API_KEY;
 
 /**
- * @param {string} boardUrl - Pinterest board URL or other public gallery
- * @returns {{ images: string[], count: number, skipped: number, isPrivate: boolean }}
+ * Normalize whatever the user pasted into a clean https://www.pinterest.com/... URL.
+ * Accepts: with/without https://, http://, www., or missing protocol entirely.
  */
-export async function scrapePublicImages(boardUrl) {
-  if (!BROWSERLESS_KEY) {
+function normalizePinterestUrl(raw) {
+  let url = raw.trim();
+  if (!url.startsWith('http')) url = 'https://' + url;
+  url = url.replace(/^http:\/\//, 'https://');
+  return url;
+}
+
+function isPinterestUrl(url) {
+  try {
+    const { hostname } = new URL(url);
+    return hostname.endsWith('pinterest.com') || hostname === 'pin.it';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Strategy 1 — Pinterest RSS feed.
+ *
+ * Public boards expose /rss/ which returns ONLY the board's actual pins.
+ * No "More like this", no sidebar recommendations, no profile images.
+ * Each <item> in the feed is one pin the user saved.
+ */
+async function tryRssFeed(boardUrl) {
+  const rssUrl = boardUrl.replace(/\/?$/, '/rss/');
+  const res = await fetch(rssUrl, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+      'Accept': 'application/rss+xml, text/xml, */*',
+    },
+    signal: AbortSignal.timeout(10000),
+  });
+
+  if (!res.ok) return null;
+  const xml = await res.text();
+  if (!xml.includes('<item') && !xml.includes('<rss')) return null;
+
+  const images = new Set();
+
+  // <media:content url="..." medium="image" />  — most reliable
+  for (const m of xml.matchAll(/media:content[^>]+url="([^"]+)"/gi)) {
+    const u = m[1];
+    if (u.includes('pinimg.com') && !u.includes('avatar') && !u.includes('profile')) {
+      // Prefer 736x (full-size) over thumbnails
+      images.add(u.replace(/\/\d+x\//, '/736x/'));
+    }
+  }
+
+  // <img src="..." /> inside <description> CDATA — fallback
+  if (images.size === 0) {
+    for (const m of xml.matchAll(/src="(https:\/\/i\.pinimg\.com\/[^"]+)"/gi)) {
+      const u = m[1];
+      if (!u.includes('avatar') && !u.includes('profile')) {
+        images.add(u.replace(/\/\d+x\//, '/736x/'));
+      }
+    }
+  }
+
+  return images.size >= 3 ? [...images] : null;
+}
+
+/**
+ * Strategy 2 — Direct HTML fetch + embedded JSON.
+ *
+ * Pinterest inlines board data as JSON in <script> tags.
+ * We parse that rather than grepping all img URLs so we only pull pins,
+ * not the "More like this" sidebar which is a separate JSON chunk.
+ */
+async function tryHtmlScrape(boardUrl) {
+  const res = await fetch(boardUrl, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+      'Accept': 'text/html,application/xhtml+xml',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+    signal: AbortSignal.timeout(10000),
+  });
+
+  if (!res.ok) return null;
+  const html  = await res.text();
+  const found = new Set();
+
+  // Extract from board JSON data block first — stops at "related_pins" so we
+  // only pull actual board pins, not the "More like this" recommendations.
+  const jsonMatch = html.match(/<script[^>]+id="__PWS_DATA__"[^>]*>([\s\S]*?)<\/script>/i)
+    ?? html.match(/<script[^>]+type="application\/json"[^>]*>([\s\S]*?)<\/script>/i);
+
+  if (jsonMatch) {
+    try {
+      const obj = JSON.parse(jsonMatch[1]);
+      const raw = JSON.stringify(obj);
+      const boardSection = raw.split('"related_pins"')[0] ?? raw;
+      for (const m of boardSection.matchAll(/https:\\\/\\\/i\.pinimg\.com\\\/(?:736x|originals)\\\/[a-f0-9\\/]+\.(?:jpg|jpeg|png|webp)/gi)) {
+        const u = m[0].replace(/\\\//g, '/');
+        if (!u.includes('avatar') && !u.includes('profile')) found.add(u);
+      }
+    } catch { /* fall through */ }
+  }
+
+  // CDN regex fallback
+  if (found.size < 5) {
+    for (const m of html.matchAll(/https:\/\/i\.pinimg\.com\/(?:736x|474x|originals)\/[a-f0-9/]+\.(?:jpg|jpeg|png|webp)/gi)) {
+      const u = m[0];
+      if (!u.includes('avatar') && !u.includes('profile') && !u.includes('favicon')) {
+        found.add(u);
+      }
+    }
+  }
+
+  // Only declare private if we found zero images AND see board-specific privacy markers.
+  // Do NOT check for generic "private":true — Pinterest puts that in profile metadata
+  // on every page, including public boards.
+  if (found.size === 0) {
+    const lower = html.toLowerCase();
+    if (
+      lower.includes('"privacy":"secret"') ||
+      lower.includes('"board_privacy":"secret"') ||
+      lower.includes('"issecret":true') ||
+      lower.includes('this board is secret')
+    ) {
+      return { isPrivate: true };
+    }
+  }
+
+  return found.size >= 3 ? [...found] : null;
+}
+
+/**
+ * Strategy 3 — SerpAPI Google Images fallback.
+ * Searches for "site:pinterest.com/username/boardname" to find pin images.
+ * Least precise but works when other strategies fail.
+ */
+async function trySerpApi(boardUrl) {
+  if (!API_KEY) return null;
+  try {
+    const searchUrl = new URL('https://serpapi.com/search');
+    searchUrl.searchParams.set('engine',  'google_images');
+    searchUrl.searchParams.set('q',       `site:${boardUrl}`);
+    searchUrl.searchParams.set('api_key', API_KEY);
+    searchUrl.searchParams.set('num',     '20');
+
+    const res  = await fetch(searchUrl.toString());
+    const data = await res.json();
+    const images = (data.images_results ?? [])
+      .map(r => r.original || r.thumbnail)
+      .filter(Boolean)
+      .slice(0, 20);
+
+    return images.length > 0 ? images : null;
+  } catch { return null; }
+}
+
+/**
+ * Main export. Tries strategies in order: RSS → HTML → SerpAPI.
+ */
+export async function scrapePublicImages(rawUrl) {
+  if (!rawUrl) {
+    return { images: [], count: 0, error: 'no_url', userMessage: 'No board URL provided.' };
+  }
+
+  const boardUrl = normalizePinterestUrl(rawUrl);
+
+  if (!isPinterestUrl(boardUrl)) {
     return {
-      images:    [],
-      count:     0,
-      skipped:   0,
-      isPrivate: false,
-      error:     'no_scraping_service',
-      userMessage: "Pinterest board scraping isn't set up yet. Upload screenshots of your Pinterest boards instead and I'll analyze those.",
+      images: [], count: 0, error: 'not_pinterest',
+      userMessage: 'Only Pinterest board URLs are supported (e.g. https://pinterest.com/yourname/boardname).',
     };
   }
 
-  // Check for known private board indicators in URL
-  if (boardUrl.includes('/secret/')) {
-    return { images: [], count: 0, skipped: 0, isPrivate: true, error: 'private_board' };
-  }
-
+  // Strategy 1: RSS feed — board pins only, no recommendations
   try {
-    // Browserless.io — runs headless Chrome and returns rendered HTML
-    const res = await fetch(`https://chrome.browserless.io/scrape?token=${BROWSERLESS_KEY}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        url: boardUrl,
-        elements: [{ selector: 'img[src]' }],
-        waitFor: 2000,
-      }),
-    });
-
-    const data = await res.json();
-    const imgElements = data?.data?.[0]?.results ?? [];
-
-    const allUrls = imgElements
-      .map(el => el.attributes?.find(a => a.name === 'src')?.value)
-      .filter(Boolean)
-      .filter(url => url.startsWith('http') && !url.includes('profile') && !url.includes('avatar'));
-
-    const images  = allUrls.slice(0, 100);
-    const skipped = Math.max(0, allUrls.length - 100);
-
-    if (images.length < 3) {
-      return { images: [], count: 0, skipped: 0, isPrivate: true, error: 'likely_private' };
+    const rssImages = await tryRssFeed(boardUrl);
+    if (rssImages) {
+      const sliced = rssImages.slice(0, 30);
+      return { images: sliced, count: sliced.length, isPartial: sliced.length < 10, source: 'rss' };
     }
+  } catch { /* fall through */ }
 
-    return { images, count: images.length, skipped, isPrivate: false };
-  } catch (err) {
-    return { images: [], count: 0, skipped: 0, isPrivate: false, error: err.message };
-  }
+  // Strategy 2: HTML scrape with JSON-first extraction
+  try {
+    const htmlResult = await tryHtmlScrape(boardUrl);
+    if (htmlResult?.isPrivate) {
+      return {
+        images: [], count: 0, isPrivate: true, error: 'private_board',
+        userMessage: 'This Pinterest board is private. Make it public or upload screenshots instead.',
+      };
+    }
+    if (Array.isArray(htmlResult) && htmlResult.length >= 3) {
+      const sliced = htmlResult.slice(0, 30);
+      return { images: sliced, count: sliced.length, isPartial: sliced.length < 10, source: 'html' };
+    }
+  } catch { /* fall through */ }
+
+  // Strategy 3: SerpAPI fallback
+  try {
+    const serpImages = await trySerpApi(boardUrl);
+    if (serpImages) {
+      return { images: serpImages, count: serpImages.length, isPartial: true, source: 'serpapi' };
+    }
+  } catch { /* fall through */ }
+
+  return {
+    images: [], count: 0, error: 'no_images_found',
+    userMessage: "Couldn't extract images from this board. Make sure it's public — or upload screenshots of the pins directly.",
+  };
 }

@@ -32,11 +32,17 @@ export async function getUserProfile(userId) {
     (wardrobeItems?.length ?? 0) + (aspirationItems?.length ?? 0) < 20 ? 'low' :
     (wardrobeItems?.length ?? 0) + (aspirationItems?.length ?? 0) < 50 ? 'medium' : 'high';
 
+  // Strip image data (data URLs) — agent needs style attributes, not pixel data
+  const stripImageData = (item) => {
+    const { image_url, ...rest } = item;
+    return rest;
+  };
+
   return {
     profile,
     styleDna,
-    wardrobeItems:    wardrobeItems    ?? [],
-    aspirationItems:  aspirationItems  ?? [],
+    wardrobeItems:    (wardrobeItems   ?? []).map(stripImageData),
+    aspirationItems:  (aspirationItems ?? []).map(stripImageData),
     recentOrders:     orders           ?? [],
     wallet:           wallet           ?? { balance: 0 },
     feedbackSignals:  feedbackSignals  ?? [],
