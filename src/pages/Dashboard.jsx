@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ArrowRight, ShoppingBag, Loader2, Trash2, RefreshCw, ThumbsDown, ExternalLink, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ArrowRight, ShoppingBag, Loader2, Trash2, RefreshCw, ThumbsDown, Heart, ExternalLink, ChevronLeft, ChevronRight } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { supabase } from '@/api/client';
 
@@ -22,14 +22,30 @@ const LOADING_PHRASES = [
 
 // ─── Product card ────────────────────────────────────────────────────
 
-function ProductCard({ item, onReroll, onDislike }) {
+function ProductCard({ item, onReroll, onLike, onDislike }) {
   const [imgFailed, setImgFailed] = useState(false);
+  const [liked,    setLiked]    = useState(false);
+  const [disliked, setDisliked] = useState(false);
   const p = item.product ?? {};
   const name  = p.name  ?? item.product_name ?? item.category ?? 'Item';
   const price = p.price ?? item.price ?? null;
   const store = p.store ?? null;
   const img   = p.image_url ?? null;
   const url   = p.product_url ?? null;
+
+  const handleLike = () => {
+    if (liked) return;
+    setLiked(true);
+    setDisliked(false);
+    onLike?.();
+  };
+
+  const handleDislike = () => {
+    if (disliked) return;
+    setDisliked(true);
+    setLiked(false);
+    onDislike?.();
+  };
 
   return (
     <div className="w-44 shrink-0 flex flex-col border border-border bg-card snap-start">
@@ -73,9 +89,24 @@ function ProductCard({ item, onReroll, onDislike }) {
             <RefreshCw className="w-3 h-3" /> Swap
           </button>
           <button
-            onClick={onDislike}
+            onClick={handleLike}
+            title="Love this"
+            className={`px-2 py-1.5 transition border-l border-border ${
+              liked
+                ? 'text-rose-500 bg-rose-500/10'
+                : 'text-muted-foreground hover:text-rose-500 hover:bg-rose-500/10'
+            }`}
+          >
+            <Heart className={`w-3 h-3 ${liked ? 'fill-current' : ''}`} />
+          </button>
+          <button
+            onClick={handleDislike}
             title="Not my style"
-            className="px-2 py-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition border-l border-border"
+            className={`px-2 py-1.5 transition border-l border-border ${
+              disliked
+                ? 'text-destructive bg-destructive/10'
+                : 'text-muted-foreground hover:text-destructive hover:bg-destructive/10'
+            }`}
           >
             <ThumbsDown className="w-3 h-3" />
           </button>
@@ -87,7 +118,7 @@ function ProductCard({ item, onReroll, onDislike }) {
 
 // ─── Outfit carousel ────────────────────────────────────────────────
 
-function OutfitCarousel({ outfits, onSendMessage }) {
+function OutfitCarousel({ outfits, onSendMessage, userId }) {
   const [activeIdx, setActiveIdx] = useState(0);
   const scrollRef = useRef(null);
 
@@ -99,17 +130,36 @@ function OutfitCarousel({ outfits, onSendMessage }) {
     if (scrollRef.current) scrollRef.current.scrollBy({ left: dir * 188, behavior: 'smooth' });
   };
 
+  const sendFeedback = (signalType, item) => {
+    if (!userId) return;
+    const p = item.product ?? {};
+    fetch('/api/feedback', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId,
+        signalType,
+        itemAttributes: {
+          name:           p.name ?? item.product_name ?? null,
+          colors:         p.colors ?? [],
+          fit_type:       p.fit_type ?? null,
+          style_category: p.style_category ?? null,
+          brand:          p.brand ?? null,
+          price:          p.price ?? null,
+          category:       item.category ?? null,
+        },
+      }),
+    }).catch(() => {}); // fire-and-forget, never surfaces in chat
+  };
+
   const handleReroll = (item) => {
     const p    = item.product ?? {};
     const name = p.name ?? item.product_name ?? item.category ?? 'that item';
     onSendMessage(`Swap out the ${name} — find me a different option that fits the same look.`);
   };
 
-  const handleDislike = (item) => {
-    const p    = item.product ?? {};
-    const name = p.name ?? item.product_name ?? item.category ?? 'that item';
-    onSendMessage(`I don't like the ${name}. Replace it with something different.`);
-  };
+  const handleLike    = (item) => sendFeedback('approval',  item);
+  const handleDislike = (item) => sendFeedback('rejection', item);
 
   const totalPrice = outfit.total_price
     ?? items.reduce((s, i) => s + (i.product?.price ?? 0), 0);
@@ -179,6 +229,7 @@ function OutfitCarousel({ outfits, onSendMessage }) {
               key={i}
               item={item}
               onReroll={() => handleReroll(item)}
+              onLike={() => handleLike(item)}
               onDislike={() => handleDislike(item)}
             />
           ))}
@@ -385,7 +436,7 @@ export default function Dashboard() {
                     )}
                     {/* Outfit cards */}
                     {msg.outfits && (
-                      <OutfitCarousel outfits={msg.outfits} onSendMessage={send} />
+                      <OutfitCarousel outfits={msg.outfits} onSendMessage={send} userId={userId} />
                     )}
                   </div>
                 )}
