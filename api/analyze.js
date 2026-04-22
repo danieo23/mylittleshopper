@@ -68,8 +68,9 @@ async function analyzePinterest(userId, boardUrl) {
     .eq('source_url', boardUrl);
 
   let analyzed = 0;
-  // Cap at 10 pins — each needs a Claude Vision call + reverse image search (~5s each)
-  const toProcess = scraped.images.slice(0, 10);
+  // Deduplicate by normalizing size variants, then cap at 10 pins
+  const uniqueImages = [...new Set(scraped.images.map(u => u.replace(/\/(?:474x|236x|originals)\//, '/736x/')))];
+  const toProcess = uniqueImages.slice(0, 10);
 
   await inBatches(toProcess, async (imageUrl) => {
     let styleResult = null;
