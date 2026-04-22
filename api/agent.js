@@ -9,7 +9,7 @@ import { createOrder }          from '../tools/create_order.js';
 import { analyzeImageStyle }    from '../tools/analyze_image_style.js';
 import { synthesizeStyleDna }   from '../tools/synthesize_style_dna.js';
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, timeout: 30_000 });
 
 // ── Tool definitions ───────────────────────────────────────────────
 // get_user_profile and score_products are intentionally omitted:

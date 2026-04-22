@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { checkOutfitMultiplier } from './check_outfit_multiplier.js';
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, timeout: 25_000 });
 
 /**
  * Takes scored products grouped by category and assembles 3-5 complete outfit sets.

@@ -41,7 +41,7 @@ async function _searchViaSerpApi({ query, maxPrice, stores }) {
   url.searchParams.set('api_key', API_KEY);
   if (maxPrice) url.searchParams.set('price_max', String(maxPrice));
 
-  const res  = await fetch(url.toString());
+  const res  = await fetch(url.toString(), { signal: AbortSignal.timeout(12000) });
   const data = await res.json();
 
   if (data.error) throw new Error(`SerpAPI error: ${data.error}`);
