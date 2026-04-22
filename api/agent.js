@@ -269,6 +269,31 @@ async function runAgent(message, conversationHistory, userId) {
     });
   }
 
+  // If loop hit MAX_TURNS while Claude was still mid-tool-call, close the pending
+  // tool_use blocks and make one final text-only call so the user gets a real reply.
+  if (response.stop_reason === 'tool_use') {
+    const pending = response.content.filter(b => b.type === 'tool_use');
+    messages.push({ role: 'assistant', content: response.content });
+    messages.push({
+      role: 'user',
+      content: pending.map(b => ({
+        type: 'tool_result',
+        tool_use_id: b.id,
+        content: 'Search limit reached — please respond with what you have so far.',
+        is_error: true,
+      })),
+    });
+    const recovery = await client.messages.create({
+      model:      LOOP_MODEL,
+      max_tokens: 512,
+      system:     buildSystemPrompt(userProfile),
+      messages,
+    });
+    const recoveryText = recovery.content.find(b => b.type === 'text')?.text
+      ?? "I hit a snag sourcing everything in one shot — try breaking the request into smaller pieces.";
+    return { reply: recoveryText, history: messages, outfits: lastOutfits };
+  }
+
   const finalText = response.content.find(b => b.type === 'text')?.text ?? '';
   return { reply: finalText, history: messages, outfits: lastOutfits };
 }

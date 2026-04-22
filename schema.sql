@@ -122,6 +122,15 @@ create table if not exists transactions (
   created_at  timestamptz default now()
 );
 
+-- ─── Migrations (run after initial schema if upgrading) ──────────
+
+-- Multi-board Pinterest support (replaces single pinterest_board_url)
+alter table style_profiles add column if not exists pinterest_board_urls text[] default '{}';
+
+-- Pin-level source tracking + shopping results cache
+alter table aspiration_items add column if not exists source_url text;
+alter table aspiration_items add column if not exists shopping_results jsonb;
+
 -- ─── Row Level Security ───────────────────────────────────────────
 
 alter table users              enable row level security;

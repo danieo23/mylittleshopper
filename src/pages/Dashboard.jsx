@@ -279,14 +279,15 @@ export default function Dashboard() {
       stopPhraseLoop();
       setLoading(false);
 
+      const replyText = data.reply || (data.outfits ? '' : 'Something went wrong — please try again.');
       setMessages(prev => {
-        const newMsg  = { role: 'ai', text: data.reply, outfits: data.outfits ?? null };
+        const newMsg  = { role: 'ai', text: replyText, outfits: data.outfits ?? null };
         const newMsgs = [...prev, newMsg];
         if (userId) localStorage.setItem(`chat_${userId}`, JSON.stringify({ messages: newMsgs, history: data.history }));
         return [...prev, { role: 'ai', text: '', outfits: data.outfits ?? null }];
       });
 
-      animateLastMessage(data.reply);
+      animateLastMessage(replyText);
 
     } catch (err) {
       stopPhraseLoop();

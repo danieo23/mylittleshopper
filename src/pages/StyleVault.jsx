@@ -216,6 +216,7 @@ export default function StyleVault() {
   // Pinterest boards (multiple)
   const [addingBoard, setAddingBoard]   = useState(false);
   const [boardInput, setBoardInput]     = useState('');
+  const [boardError, setBoardError]     = useState('');
   const [analyzingBoard, setAnalyzingBoard] = useState(null); // which board URL is currently analyzing
 
   // Sizes
@@ -262,11 +263,20 @@ export default function StyleVault() {
   const addBoard = async () => {
     const url = boardInput.trim();
     if (!url) return;
-    const next = [...new Set([...boards, url])];
-    await saveProfile({ pinterest_board_urls: next });
-    setBoardInput('');
-    setAddingBoard(false);
-    analyzeBoard(url);
+    setBoardError('');
+    try {
+      const next = [...new Set([...boards, url])];
+      await saveProfile({ pinterest_board_urls: next });
+      setBoardInput('');
+      setAddingBoard(false);
+      if (analyzingBoard) {
+        setAnalyzeMsg('Board saved — click Re-analyze once the current analysis finishes.');
+      } else {
+        analyzeBoard(url);
+      }
+    } catch (err) {
+      setBoardError(`Could not save board: ${err.message}`);
+    }
   };
 
   const removeBoard = async (url) => {
@@ -280,6 +290,11 @@ export default function StyleVault() {
       .eq('user_id', me.id).order('analyzed_at', { ascending: false });
     setAspirationItems(fresh ?? []);
     setAnalyzeMsg('');
+  };
+
+  const removePin = async (pinId) => {
+    setAspirationItems(prev => prev.filter(p => p.id !== pinId));
+    await supabase.from('aspiration_items').delete().eq('id', pinId).catch(() => {});
   };
 
   // Analyzes one board — only replaces pins from that specific board URL
@@ -588,6 +603,10 @@ export default function StyleVault() {
           </button>
         )}
 
+        {boardError && (
+          <p className="mt-3 text-xs text-destructive">{boardError}</p>
+        )}
+
         {analyzeMsg && (
           <p className={`mt-3 text-xs ${analyzeMsg.startsWith('Done') ? 'text-primary' : 'text-muted-foreground'}`}>
             {analyzeMsg}
@@ -599,11 +618,21 @@ export default function StyleVault() {
       {aspirationItems.length > 0 && (
         <Section title="Shoppable pins" subtitle="Your Pinterest board — analyzed and matched to real products.">
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-            {aspirationItems.map(pin => {
+            {aspirationItems
+              .filter((pin, i, arr) => arr.findIndex(p => p.image_url === pin.image_url) === i)
+              .map(pin => {
               const shopping = pin.shopping_results?.shopping ?? [];
               const topShop  = shopping[0];
               return (
-                <div key={pin.id} className="border border-border bg-card overflow-hidden">
+                <div key={pin.id} className="border border-border bg-card overflow-hidden relative group">
+                  {/* Delete button */}
+                  <button
+                    onClick={() => removePin(pin.id)}
+                    className="absolute top-1.5 right-1.5 z-10 w-6 h-6 flex items-center justify-center bg-black/60 text-white opacity-0 group-hover:opacity-100 transition"
+                    title="Remove pin"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
                   {/* Pin image */}
                   <div className="aspect-square bg-muted overflow-hidden">
                     <img src={pin.image_url} alt="" className="w-full h-full object-cover" />
