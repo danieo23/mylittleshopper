@@ -117,11 +117,14 @@ OPERATING RULES:
 
 PRODUCT RECOMMENDATION RULES (CRITICAL):
 - NEVER describe, name, or invent products from memory. Every product recommendation MUST come from a search_products tool call.
-- When the user asks for outfits, shopping help, or product recommendations: call search_products (once per category needed), then score_products, then build_outfits. Always follow this sequence.
+- When the user asks for outfits, shopping help, or product recommendations, execute this exact sequence in tool calls — no text between steps:
+  1. Call search_products for every needed category IN THE SAME TURN (parallel)
+  2. Call score_products with all results IN THE SAME TURN
+  3. Call build_outfits immediately after scoring
+  4. ONLY THEN write your short text reply
+- DO NOT emit any text between tool calls. No "Now let me...", no "Next I'll...", no progress updates. Go straight from one tool call to the next. The user sees a loading indicator — narration is noise.
 - If search_products returns an error or empty results, tell the user exactly that — do not fall back to describing products yourself.
-- When searching multiple categories (e.g. tops + bottoms + shoes), call all search_products tools IN THE SAME TURN — do not wait for one to finish before requesting the next. This runs them in parallel and is much faster.
-- The build_outfits tool will automatically attach real images, prices, and links from the search. Your text reply should be a brief (2–3 sentence) intro to what you found — the UI shows the products visually, so do NOT list them in text.
-- After build_outfits runs, your text reply should be conversational and short: e.g. "Here's your Italy capsule — three looks built around your coastal palette. Let me know if you want to swap anything." That's it.`;
+- After build_outfits runs, your text reply should be 1–2 sentences max: e.g. "Here's your Italy capsule — three looks built around your coastal palette. Swap anything you want." That's it. The UI shows the products visually.`;
 }
 
 // ── Tool execution ─────────────────────────────────────────────────
@@ -198,26 +201,42 @@ async function runAgent(message, conversationHistory, userId) {
   });
 
   let lastOutfits = null;
+  let needsOutfits = false; // flips true once search_products has been called
+  const MAX_TURNS  = 12;
+  let turns        = 0;
 
-  // Agentic loop — execute all tool calls in parallel per turn, repeat until final text
-  while (response.stop_reason === 'tool_use') {
-    const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
+  // Agentic loop — run tool calls in parallel per turn, nudge Claude if it narrates mid-chain
+  while (turns++ < MAX_TURNS) {
+    if (response.stop_reason === 'tool_use') {
+      const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
 
-    // Run all tool calls for this turn in parallel (e.g. multiple search_products at once)
-    const toolResults = await Promise.all(
-      toolUseBlocks.map(async (block) => {
-        try {
-          const result = await executeTool(block.name, block.input, userId, userProfile);
-          if (block.name === 'build_outfits') lastOutfits = result;
-          return { type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) };
-        } catch (err) {
-          return { type: 'tool_result', tool_use_id: block.id, content: `Error: ${err.message}`, is_error: true };
-        }
-      })
-    );
+      if (toolUseBlocks.some(b => b.name === 'search_products')) needsOutfits = true;
 
-    messages.push({ role: 'assistant', content: response.content });
-    messages.push({ role: 'user',      content: toolResults });
+      // Run all tool calls for this turn in parallel
+      const toolResults = await Promise.all(
+        toolUseBlocks.map(async (block) => {
+          try {
+            const result = await executeTool(block.name, block.input, userId, userProfile);
+            if (block.name === 'build_outfits') lastOutfits = result;
+            return { type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) };
+          } catch (err) {
+            return { type: 'tool_result', tool_use_id: block.id, content: `Error: ${err.message}`, is_error: true };
+          }
+        })
+      );
+
+      messages.push({ role: 'assistant', content: response.content });
+      messages.push({ role: 'user',      content: toolResults });
+
+    } else {
+      // Claude emitted text — if products were searched but outfits not built yet, nudge it
+      if (needsOutfits && !lastOutfits) {
+        messages.push({ role: 'assistant', content: response.content });
+        messages.push({ role: 'user', content: 'Call score_products then build_outfits now. Do not write any text first.' });
+      } else {
+        break; // genuine final reply
+      }
+    }
 
     response = await client.messages.create({
       model:      LOOP_MODEL,
