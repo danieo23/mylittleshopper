@@ -1,19 +1,17 @@
 /**
- * Finds Depop-aesthetic images for every quiz card using the Pexels API.
- * Pexels is free (no search limits), returns clean portrait-style fashion
- * photography from diverse creators worldwide — not store catalogs.
+ * Sources flat-lay / product-photography images for every quiz card using Pexels.
+ * Goal: item-only shots on clean/white/minimal backgrounds — no people, no street,
+ * no lifestyle. Think ASOS product page or a clean flat lay.
  *
  * For each item:
- *   1. Search Pexels with aesthetic/product-focused terms
- *   2. Filter to portrait-orientation results
- *   3. Take top 3 candidates
- *   4. Use Claude Vision to pick the cleanest, most item-focused one
+ *   1. Search Pexels with flat-lay / product-photography focused terms
+ *   2. Take top 5 candidates (any orientation — flat lays are often square)
+ *   3. Use Claude Vision to pick the one with NO person, cleanest background,
+ *      item filling the frame
  *
  * Usage:
- *   ANTHROPIC_API_KEY="sk-ant-..." node tools/source_quiz_images.js
- *   (PEXELS_API_KEY read from .env.local automatically)
- *
- * Get a free Pexels API key at: https://www.pexels.com/api/
+ *   node tools/source_quiz_images.js
+ *   (reads ANTHROPIC_API_KEY + PEXELS_API_KEY from .env.local)
  *
  * Outputs: quiz-image-results.json
  */
@@ -25,7 +23,6 @@ import { dirname, join } from 'path';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 
-// Load .env.local
 try {
   const env = readFileSync(join(__dir, '..', '.env.local'), 'utf8');
   for (const line of env.split('\n')) {
@@ -40,87 +37,85 @@ try {
 const PEXELS_KEY    = process.env.PEXELS_API_KEY;
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 
-if (!PEXELS_KEY)    { console.error('PEXELS_API_KEY not set — add it to .env.local or get a free key at pexels.com/api'); process.exit(1); }
+if (!PEXELS_KEY)    { console.error('PEXELS_API_KEY not set'); process.exit(1); }
 if (!ANTHROPIC_KEY) { console.error('ANTHROPIC_API_KEY not set'); process.exit(1); }
 
 const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
 
-// ── Search queries: written to find Depop/mirror/product-style shots ──────────
+// Queries written to find flat-lay / product-only shots, not lifestyle/model photos
 const ITEMS = [
   // BOTTOMS
-  { id: 'skinny_jeans',    q: 'skinny jeans fashion outfit' },
-  { id: 'straight_jeans',  q: 'straight leg jeans outfit fashion' },
-  { id: 'wide_leg',        q: 'wide leg jeans flare pants fashion' },
-  { id: 'mom_jeans',       q: 'mom jeans high waist outfit' },
-  { id: 'baggy',           q: 'baggy jeans oversized fashion outfit' },
-  { id: 'cargo',           q: 'cargo pants utility outfit fashion' },
-  { id: 'leggings',        q: 'black leggings outfit fashion' },
-  { id: 'trousers',        q: 'tailored trousers dress pants fashion' },
-  { id: 'denim_shorts',    q: 'denim shorts fashion outfit summer' },
-  { id: 'bike_shorts',     q: 'bike shorts biker shorts fashion outfit' },
+  { id: 'skinny_jeans',    q: 'skinny jeans flat lay white background denim' },
+  { id: 'straight_jeans',  q: 'straight leg jeans flat lay white background denim' },
+  { id: 'wide_leg',        q: 'wide leg flare jeans flat lay white background' },
+  { id: 'mom_jeans',       q: 'mom jeans high waist flat lay denim' },
+  { id: 'baggy',           q: 'baggy jeans flat lay white background denim' },
+  { id: 'cargo',           q: 'cargo pants flat lay white background' },
+  { id: 'leggings',        q: 'black leggings flat lay product photography' },
+  { id: 'trousers',        q: 'tailored trousers flat lay white background' },
+  { id: 'denim_shorts',    q: 'denim shorts flat lay white background' },
+  { id: 'bike_shorts',     q: 'bike shorts flat lay product photography' },
   // TOPS
-  { id: 'basic_tee',       q: 'white t-shirt basic tee fashion outfit' },
-  { id: 'oversized_tee',   q: 'oversized t-shirt fashion outfit' },
-  { id: 'crop_top',        q: 'crop top fashion outfit women' },
-  { id: 'tank_cami',       q: 'camisole tank top fashion outfit' },
-  { id: 'button_down',     q: 'button down shirt fashion outfit women' },
-  { id: 'blouse',          q: 'blouse silk flowy fashion outfit women' },
-  { id: 'bodysuit',        q: 'bodysuit fashion outfit women' },
-  { id: 'off_shoulder',    q: 'off shoulder top fashion women outfit' },
-  { id: 'graphic_tee',     q: 'graphic tee t-shirt fashion outfit' },
-  { id: 'polo',            q: 'polo shirt collar shirt fashion women' },
+  { id: 'basic_tee',       q: 'white t-shirt flat lay product photography minimal' },
+  { id: 'oversized_tee',   q: 'oversized t-shirt flat lay white background' },
+  { id: 'crop_top',        q: 'crop top flat lay white background fashion' },
+  { id: 'tank_cami',       q: 'camisole tank top flat lay white background' },
+  { id: 'button_down',     q: 'button down shirt flat lay white background' },
+  { id: 'blouse',          q: 'silk blouse flat lay white background fashion' },
+  { id: 'bodysuit',        q: 'bodysuit flat lay white background fashion' },
+  { id: 'off_shoulder',    q: 'off shoulder top flat lay white background' },
+  { id: 'graphic_tee',     q: 'graphic t-shirt flat lay white background' },
+  { id: 'polo',            q: 'polo shirt flat lay product photography white background' },
   // DRESSES & SKIRTS
-  { id: 'mini_dress',      q: 'mini dress fashion women outfit' },
-  { id: 'midi_dress',      q: 'midi dress fashion women outfit' },
-  { id: 'maxi_dress',      q: 'maxi dress long flowy fashion women' },
-  { id: 'mini_skirt',      q: 'mini skirt fashion women outfit' },
-  { id: 'midi_skirt',      q: 'midi skirt fashion women outfit' },
-  { id: 'maxi_skirt',      q: 'maxi skirt long fashion women outfit' },
-  { id: 'slip_dress',      q: 'slip dress satin fashion women outfit' },
-  { id: 'wrap_dress',      q: 'wrap dress fashion women outfit' },
-  { id: 'denim_skirt',     q: 'denim skirt fashion women outfit' },
-  { id: 'tennis_skirt',    q: 'tennis skirt pleated mini fashion women' },
+  { id: 'mini_dress',      q: 'mini dress flat lay white background fashion' },
+  { id: 'midi_dress',      q: 'midi dress flat lay product photography' },
+  { id: 'maxi_dress',      q: 'maxi dress long flat lay white background' },
+  { id: 'mini_skirt',      q: 'mini skirt flat lay white background' },
+  { id: 'midi_skirt',      q: 'midi skirt flat lay white background fashion' },
+  { id: 'maxi_skirt',      q: 'maxi skirt long flat lay product' },
+  { id: 'slip_dress',      q: 'slip dress satin flat lay white background' },
+  { id: 'wrap_dress',      q: 'wrap dress flat lay white background fashion' },
+  { id: 'denim_skirt',     q: 'denim skirt flat lay white background' },
+  { id: 'tennis_skirt',    q: 'tennis skirt pleated flat lay white background' },
   // OUTERWEAR
-  { id: 'oversized_blazer', q: 'oversized blazer fashion women outfit' },
-  { id: 'fitted_blazer',   q: 'fitted blazer tailored jacket women fashion' },
-  { id: 'leather_jacket',  q: 'leather jacket fashion women outfit' },
-  { id: 'denim_jacket',    q: 'denim jacket women fashion outfit' },
-  { id: 'trench_coat',     q: 'trench coat women fashion outfit' },
-  { id: 'puffer',          q: 'puffer jacket women fashion outfit' },
-  { id: 'chunky_cardigan', q: 'chunky knit cardigan oversized women fashion' },
-  { id: 'knit_cardigan',   q: 'knit cardigan women fashion outfit' },
-  { id: 'hoodie',          q: 'oversized hoodie women fashion outfit' },
-  { id: 'bomber',          q: 'bomber jacket women fashion outfit' },
+  { id: 'oversized_blazer', q: 'oversized blazer flat lay white background fashion' },
+  { id: 'fitted_blazer',   q: 'fitted blazer jacket flat lay white background' },
+  { id: 'leather_jacket',  q: 'leather jacket flat lay white background' },
+  { id: 'denim_jacket',    q: 'denim jacket flat lay white background' },
+  { id: 'trench_coat',     q: 'trench coat flat lay white background fashion' },
+  { id: 'puffer',          q: 'puffer jacket flat lay white background' },
+  { id: 'chunky_cardigan', q: 'chunky knit cardigan flat lay white background' },
+  { id: 'knit_cardigan',   q: 'knit cardigan flat lay white background fashion' },
+  { id: 'hoodie',          q: 'hoodie sweatshirt flat lay white background' },
+  { id: 'bomber',          q: 'bomber jacket flat lay white background' },
   // SHOES
-  { id: 'white_sneakers',  q: 'white sneakers shoes fashion women' },
-  { id: 'chunky_sneakers', q: 'chunky platform sneakers shoes fashion' },
-  { id: 'athletic',        q: 'running athletic sneakers shoes fashion' },
-  { id: 'heeled_boots',    q: 'heeled ankle boots shoes fashion women' },
-  { id: 'flat_boots',      q: 'chelsea boots flat ankle boots fashion women' },
-  { id: 'knee_high',       q: 'knee high boots fashion women outfit' },
-  { id: 'block_heels',     q: 'block heel shoes fashion women' },
-  { id: 'strappy_heels',   q: 'strappy heels sandals fashion women' },
-  { id: 'loafers',         q: 'loafers ballet flats shoes fashion women' },
-  { id: 'sandals',         q: 'sandals mules shoes fashion women' },
+  { id: 'white_sneakers',  q: 'white sneakers shoes product photography white background' },
+  { id: 'chunky_sneakers', q: 'chunky platform sneakers shoes product photography' },
+  { id: 'athletic',        q: 'running athletic sneakers shoes product photography white' },
+  { id: 'heeled_boots',    q: 'heeled ankle boots shoes product photography white background' },
+  { id: 'flat_boots',      q: 'chelsea boots ankle boots shoes product photography' },
+  { id: 'knee_high',       q: 'knee high boots shoes product photography white background' },
+  { id: 'block_heels',     q: 'block heel shoes product photography white background' },
+  { id: 'strappy_heels',   q: 'strappy heels sandals shoes product photography white' },
+  { id: 'loafers',         q: 'loafers shoes product photography white background' },
+  { id: 'sandals',         q: 'sandals mules shoes product photography white background' },
   // ACCESSORIES
-  { id: 'dainty_jewelry',    q: 'dainty delicate jewelry necklace earrings fashion' },
-  { id: 'statement_jewelry', q: 'statement bold jewelry earrings necklace fashion' },
-  { id: 'layered_necklaces', q: 'layered necklaces gold jewelry fashion' },
-  { id: 'hoop_earrings',     q: 'hoop earrings gold fashion jewelry' },
-  { id: 'structured_bag',    q: 'structured handbag top handle satchel fashion' },
-  { id: 'crossbody',         q: 'crossbody bag mini shoulder bag fashion' },
-  { id: 'tote',              q: 'tote bag fashion women' },
-  { id: 'baseball_cap',      q: 'baseball cap hat fashion women outfit' },
-  { id: 'sunglasses',        q: 'sunglasses fashion women portrait' },
-  { id: 'belt',              q: 'belt waist fashion women outfit' },
+  { id: 'dainty_jewelry',    q: 'dainty delicate jewelry necklace earrings flat lay white' },
+  { id: 'statement_jewelry', q: 'statement bold jewelry earrings flat lay white background' },
+  { id: 'layered_necklaces', q: 'layered gold necklaces jewelry flat lay white background' },
+  { id: 'hoop_earrings',     q: 'hoop earrings gold jewelry flat lay white background' },
+  { id: 'structured_bag',    q: 'structured handbag satchel product photography white background' },
+  { id: 'crossbody',         q: 'crossbody bag mini shoulder bag product photography white' },
+  { id: 'tote',              q: 'tote bag product photography white background' },
+  { id: 'baseball_cap',      q: 'baseball cap hat product photography white background' },
+  { id: 'sunglasses',        q: 'sunglasses product photography white background minimal' },
+  { id: 'belt',              q: 'leather belt product photography white background' },
 ];
 
-// ── Pexels search ─────────────────────────────────────────────────────────────
 async function search(query) {
   const url = new URL('https://api.pexels.com/v1/search');
-  url.searchParams.set('query',       query);
-  url.searchParams.set('per_page',    '15');
-  url.searchParams.set('orientation', 'portrait');
+  url.searchParams.set('query',    query);
+  url.searchParams.set('per_page', '20');
 
   const res  = await fetch(url.toString(), {
     headers: { Authorization: PEXELS_KEY },
@@ -131,7 +126,6 @@ async function search(query) {
   return data.photos ?? [];
 }
 
-// ── Claude Vision: pick the cleanest image from up to 3 candidates ───────────
 async function visionPick(label, urls) {
   if (urls.length === 0) return null;
   if (urls.length === 1) return urls[0];
@@ -143,16 +137,21 @@ async function visionPick(label, urls) {
   }
   content.push({
     type: 'text',
-    text: `These are candidate images for a fashion quiz card labeled "${label}".
+    text: `These are candidate images for a fashion style quiz card labeled "${label}".
 
-Pick the BEST one using these criteria in order:
-1. "${label}" is unmistakably the HERO — it dominates the frame
-2. Clean, simple, or indoor background (plain wall, mirror, studio) — NOT chaotic street or ugly setting
-3. Good quality — NOT blurry, dark, or unflattering
-4. If a person is shown, they look presentable and the shot is flattering
-5. Authentic vibe preferred over generic stock — mirror selfie, flat lay, or editorial model shot is ideal
+The quiz is trying to look like a clean, professional product-photography style quiz (think ASOS product page or a styled flat lay).
 
-Reply ONLY with the number: 1, 2, or 3. Nothing else.`,
+Pick the BEST image using these criteria strictly in order:
+
+1. NO FULL PERSON visible — item only, flat lay, on a hanger, ghost mannequin, or just hands/partial detail. A photo showing a complete person's face or body in a real-world setting is the WORST choice.
+2. White, off-white, or very minimal/clean background — no street scenes, no outdoor locations, no busy environments.
+3. "${label}" is the clear hero — it fills the frame and is immediately identifiable.
+4. Sharp, well-lit, high-quality — not dark, blurry, or low-res.
+5. Looks like professional product or editorial photography — not a casual snapshot.
+
+If ALL images show full people, pick the one with the cleanest background and most item-focused composition.
+
+Reply ONLY with the number (1 through ${urls.length}). Nothing else.`,
   });
 
   try {
@@ -169,12 +168,11 @@ Reply ONLY with the number: 1, 2, or 3. Nothing else.`,
   }
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
   const results  = {};
   const failures = [];
 
-  console.log(`Sourcing images for ${ITEMS.length} quiz items...\n`);
+  console.log(`Sourcing flat-lay / product images for ${ITEMS.length} quiz items...\n`);
 
   for (const item of ITEMS) {
     process.stdout.write(`  ${item.id.padEnd(22)} `);
@@ -182,11 +180,10 @@ async function main() {
     try {
       const photos = await search(item.q);
 
-      // Use src.large (940px wide) — good quality, not too heavy
       const urls = photos
         .filter(p => p.src?.large)
         .map(p => p.src.large)
-        .slice(0, 3);
+        .slice(0, 5);
 
       if (urls.length === 0) {
         console.log(`✗  no results`);
