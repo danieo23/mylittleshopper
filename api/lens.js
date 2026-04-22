@@ -56,8 +56,22 @@ export default async function handler(req, res) {
       console.warn('[lens] Image proxy failed, using original URL:', proxyErr.message);
     }
 
+    // Verify the image URL is publicly reachable before sending to SerpAPI
+    try {
+      const probe = await fetch(fetchUrl, { method: 'HEAD', signal: AbortSignal.timeout(5000) });
+      console.log('[lens] image probe:', fetchUrl.slice(0, 80), '→', probe.status);
+      if (!probe.ok) {
+        console.error('[lens] image URL not reachable, status:', probe.status);
+        return res.status(200).json({ shopping_results: { shopping: [], visual: [] }, debug: `Image URL returned ${probe.status}` });
+      }
+    } catch (probeErr) {
+      console.error('[lens] image probe failed:', probeErr.message);
+    }
+
     // Run Google Lens with the proxied URL
+    console.log('[lens] calling SerpAPI with:', fetchUrl.slice(0, 80));
     const lens = await reverseImageSearch(fetchUrl);
+    console.log('[lens] shopping:', lens.shopping_results?.length ?? 0, 'visual:', lens.visual_matches?.length ?? 0);
     const hasResults = lens.shopping_results?.length > 0;
 
     if (!hasResults) {
