@@ -72,7 +72,13 @@ function ShoppablePinCard({ pin, onRemove, userId }) {
   const [fetching,    setFetching]    = useState(false);
   const [lensResults, setLensResults] = useState(pin.shopping_results ?? null);
 
-  const shopping  = lensResults?.shopping ?? [];
+  // Merge shopping + visual — Google Lens often returns results only in visual_matches
+  const shopping  = [
+    ...(lensResults?.shopping ?? []),
+    ...(lensResults?.visual   ?? []).filter(v =>
+      !(lensResults?.shopping ?? []).some(s => s.product_url === v.product_url)
+    ),
+  ];
   const hasShop   = shopping.length > 0;
   const grouped   = groupByItemType(shopping);
 
@@ -91,6 +97,7 @@ function ShoppablePinCard({ pin, onRemove, userId }) {
   };
 
   const handleToggle = () => {
+    // Fetch if: never fetched, OR previously cached but empty (stale null result)
     if (!open && !hasShop && !fetching) fetchLens();
     setOpen(o => !o);
   };
