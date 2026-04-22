@@ -95,7 +95,19 @@ async function tryHtmlScrape(boardUrl) {
     try {
       const obj = JSON.parse(jsonMatch[1]);
       const raw = JSON.stringify(obj);
-      const boardSection = raw.split('"related_pins"')[0] ?? raw;
+      // Cut at whichever "related/recommended" marker appears first —
+      // Pinterest uses several different key names across page types.
+      const endMarkers = [
+        '"related_pins"', '"relatedPins"', '"related_modules"',
+        '"BoardRelatedModulesResource"', '"recommended_feed"',
+        '"upsell_pins"', '"upsell"', '"morelikethis"', '"more_like_this"',
+      ];
+      let cutAt = raw.length;
+      for (const marker of endMarkers) {
+        const idx = raw.indexOf(marker);
+        if (idx > 0 && idx < cutAt) cutAt = idx;
+      }
+      const boardSection = raw.slice(0, cutAt);
       for (const m of boardSection.matchAll(/https:\\\/\\\/i\.pinimg\.com\\\/(?:736x|474x|236x|originals)\\\/[a-f0-9\\/]+\.(?:jpg|jpeg|png|gif|webp)/gi)) {
         const u = m[0].replace(/\\\//g, '/').replace(/\/(?:474x|236x|originals)\//, '/736x/');
         if (!u.includes('avatar') && !u.includes('profile')) found.add(u);
