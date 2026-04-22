@@ -112,8 +112,21 @@ function hexToBucket(hex) {
   return 'pink';
 }
 
+// ── Helpers ────────────────────────────────────────────────────────
+function formatRelativeDate(iso) {
+  const d    = new Date(iso);
+  const now  = new Date();
+  const diff = (now - d) / 1000;
+  if (diff < 60)        return 'just now';
+  if (diff < 3600)      return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400)     return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 86400 * 2) return 'yesterday';
+  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}d ago`;
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
 // ── System prompt ──────────────────────────────────────────────────
-function buildSystemPrompt(userProfile) {
+function buildSystemPrompt(userProfile, recentConversations = []) {
   const { styleDna, confidenceLevel, imageCount, wallet,
           favoriteStores, sizes, styleTags, pinterestBoardUrls } = userProfile;
 
@@ -151,7 +164,14 @@ USER PROFILE (do not call any tool to fetch this — it is complete):
 - Sizes: ${sizeLine}
 ${!dnaActive ? '\n⚠ Style DNA has not been synthesized yet — wardrobe/Pinterest analysis may still be processing. Search broadly and lean on style tags and aspiration gap for guidance.' : ''}
 
-━━━ CLARIFYING QUESTIONS — checklist, one message, then search ━━━
+${recentConversations.length ? `━━━ RECENT SESSIONS ━━━
+
+The user's last ${recentConversations.length} shopping session${recentConversations.length > 1 ? 's' : ''} (for continuity — do not re-ask about these):
+${recentConversations.map((c, i) => `  ${i + 1}. "${c.title}" — ${formatRelativeDate(c.updated_at)}`).join('\n')}
+
+Use this to: reference past context naturally ("last time you were looking for Italy fits…"), avoid recommending the same things, and notice evolving style patterns. Do NOT start every message by recapping the history.
+
+` : ''}━━━ CLARIFYING QUESTIONS — checklist, one message, then search ━━━
 
 Before searching, you need 4 things. Check what the user has already given you.
 If anything is missing, ask ALL missing items in ONE message — then search on their reply, no exceptions.
@@ -280,7 +300,7 @@ async function executeTool(toolName, toolInput, userId, userProfile) {
 // ── Main handler (Vercel serverless function) ──────────────────────
 export const config = { maxDuration: 120 };
 
-async function runAgent(message, conversationHistory, userId) {
+async function runAgent(message, conversationHistory, userId, recentConversations = []) {
   // Fetch profile once — reused for system prompt and cached for tool calls
   const userProfile = await getUserProfile(userId);
 
@@ -308,7 +328,7 @@ async function runAgent(message, conversationHistory, userId) {
   let response = await client.messages.create({
     model:        LOOP_MODEL,
     max_tokens:   LOOP_TOKENS,
-    system:       buildSystemPrompt(userProfile),
+    system:       buildSystemPrompt(userProfile, recentConversations),
     tools:        TOOLS,
     tool_choice:  toolChoice(),
     messages,
@@ -366,7 +386,7 @@ async function runAgent(message, conversationHistory, userId) {
     response = await client.messages.create({
       model:       LOOP_MODEL,
       max_tokens:  LOOP_TOKENS,
-      system:      buildSystemPrompt(userProfile),
+      system:      buildSystemPrompt(userProfile, recentConversations),
       tools:       TOOLS,
       tool_choice: toolChoice(),
       messages,
@@ -390,7 +410,7 @@ async function runAgent(message, conversationHistory, userId) {
     const recovery = await client.messages.create({
       model:      LOOP_MODEL,
       max_tokens: 512,
-      system:     buildSystemPrompt(userProfile),
+      system:     buildSystemPrompt(userProfile, recentConversations),
       messages,
     });
     const recoveryText = recovery.content.find(b => b.type === 'text')?.text
@@ -405,7 +425,7 @@ async function runAgent(message, conversationHistory, userId) {
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { message, conversationHistory = [], userId } = req.body;
+  const { message, conversationHistory = [], userId, recentConversations = [] } = req.body;
   if (!message || !userId) return res.status(400).json({ error: 'message and userId are required' });
 
   // Race the agent against a 110s timeout — always returns JSON, never lets Vercel kill it silently
@@ -414,7 +434,7 @@ export default async function handler(req, res) {
   );
 
   try {
-    const result = await Promise.race([runAgent(message, conversationHistory, userId), timeout]);
+    const result = await Promise.race([runAgent(message, conversationHistory, userId, recentConversations), timeout]);
     return res.status(200).json(result);
   } catch (err) {
     console.error('[agent] error:', err);

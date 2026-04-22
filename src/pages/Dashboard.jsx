@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ArrowRight, ShoppingBag, Loader2, Trash2, RefreshCw, ThumbsDown, Heart, ExternalLink, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ArrowRight, ShoppingBag, Loader2, Trash2, RefreshCw, ThumbsDown, Heart, ExternalLink, ChevronLeft, ChevronRight, Plus, X, MessageSquare } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { supabase } from '@/api/client';
 
@@ -19,6 +19,50 @@ const LOADING_PHRASES = [
   'Your future wardrobe is loading…',
   'Hold tight, this is going to be good.',
 ];
+
+function formatRelativeDate(iso) {
+  const d    = new Date(iso);
+  const now  = new Date();
+  const diff = (now - d) / 1000;
+  if (diff < 60)        return 'just now';
+  if (diff < 3600)      return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400)     return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 86400 * 2) return 'yesterday';
+  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}d ago`;
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+// ─── Conversation sidebar item ────────────────────────────────────────
+
+function ConversationItem({ conv, active, onClick, onDelete }) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <div
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onClick={onClick}
+      className={`flex items-start gap-2 px-3 py-2.5 cursor-pointer transition ${
+        active
+          ? 'bg-secondary text-foreground'
+          : 'text-muted-foreground hover:bg-secondary/50 hover:text-foreground'
+      }`}
+    >
+      <MessageSquare className="w-3 h-3 mt-0.5 shrink-0 opacity-50" />
+      <div className="flex-1 min-w-0">
+        <div className="text-xs truncate leading-snug">{conv.title ?? 'Chat'}</div>
+        <div className="text-[9px] text-muted-foreground/50 mt-0.5">{formatRelativeDate(conv.updated_at)}</div>
+      </div>
+      {hovered && (
+        <button
+          onClick={e => { e.stopPropagation(); onDelete(); }}
+          className="shrink-0 text-muted-foreground/50 hover:text-destructive transition mt-0.5"
+        >
+          <X className="w-3 h-3" />
+        </button>
+      )}
+    </div>
+  );
+}
 
 // ─── Product card ────────────────────────────────────────────────────
 
@@ -149,7 +193,7 @@ function OutfitCarousel({ outfits, onSendMessage, userId }) {
           category:       item.category ?? null,
         },
       }),
-    }).catch(() => {}); // fire-and-forget, never surfaces in chat
+    }).catch(() => {});
   };
 
   const handleReroll = (item) => {
@@ -249,31 +293,37 @@ function OutfitCarousel({ outfits, onSendMessage, userId }) {
 // ─── Main component ──────────────────────────────────────────────────
 
 export default function Dashboard() {
-  const [messages, setMessages] = useState([]);
-  const [history, setHistory]   = useState([]);
-  const [input, setInput]       = useState('');
-  const [loading, setLoading]   = useState(false);
-  const [loadingPhrase, setLoadingPhrase] = useState(LOADING_PHRASES[0]);
-  const [userId, setUserId]     = useState(null);
+  const [messages,        setMessages]        = useState([]);
+  const [history,         setHistory]         = useState([]);
+  const [input,           setInput]           = useState('');
+  const [loading,         setLoading]         = useState(false);
+  const [loadingPhrase,   setLoadingPhrase]   = useState(LOADING_PHRASES[0]);
+  const [userId,          setUserId]          = useState(null);
+  const [conversations,   setConversations]   = useState([]);
+  const [conversationId,  setConversationId]  = useState(null);
+  const [loadingConvId,   setLoadingConvId]   = useState(null);
+
   const bottomRef    = useRef(null);
   const animRef      = useRef(null);
   const phraseRef    = useRef(null);
   const phraseIdxRef = useRef(0);
+  // Track latest messages for save — avoids stale closure in setMessages callbacks
+  const messagesRef  = useRef([]);
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (!user) return;
       setUserId(user.id);
-      const saved = localStorage.getItem(`chat_${user.id}`);
-      if (saved) {
-        try {
-          const { messages: m, history: h } = JSON.parse(saved);
-          if (m?.length) setMessages(m);
-          if (h?.length) setHistory(h);
-        } catch {}
-      }
+      fetch(`/api/conversations?userId=${user.id}`)
+        .then(r => r.json())
+        .then(d => { if (d.conversations) setConversations(d.conversations); })
+        .catch(() => {});
     });
   }, []);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -313,6 +363,75 @@ export default function Dashboard() {
     }, 18);
   };
 
+  // Persist conversation to DB — fire-and-forget
+  const saveConversation = (msgs, hist, currentConvId) => {
+    if (!userId || !msgs.length) return;
+    const firstUser = msgs.find(m => m.role === 'user');
+    const title = firstUser ? firstUser.text.slice(0, 60) : 'Chat';
+    const body  = { userId, title, messages: msgs, history: hist };
+    if (currentConvId) body.conversationId = currentConvId;
+
+    fetch('/api/conversations', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body),
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (!d.id) return;
+        if (!currentConvId) {
+          setConversationId(d.id);
+          setConversations(prev => [
+            { id: d.id, title, updated_at: new Date().toISOString() },
+            ...prev,
+          ]);
+        } else {
+          setConversations(prev =>
+            prev.map(c => c.id === d.id ? { ...c, title, updated_at: new Date().toISOString() } : c)
+          );
+        }
+      })
+      .catch(() => {});
+  };
+
+  const loadConversation = async (conv) => {
+    if (loading || loadingConvId) return;
+    setLoadingConvId(conv.id);
+    try {
+      const res  = await fetch(`/api/conversations?userId=${userId}&id=${conv.id}`);
+      const data = await res.json();
+      if (data.messages_json) {
+        if (animRef.current) clearInterval(animRef.current);
+        setMessages(data.messages_json);
+        setHistory(data.history_json ?? []);
+        setConversationId(conv.id);
+      }
+    } catch {}
+    setLoadingConvId(null);
+  };
+
+  const deleteConversation = async (id) => {
+    await fetch('/api/conversations', {
+      method:  'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ userId, conversationId: id }),
+    }).catch(() => {});
+    setConversations(prev => prev.filter(c => c.id !== id));
+    if (conversationId === id) {
+      setMessages([]);
+      setHistory([]);
+      setConversationId(null);
+    }
+  };
+
+  const startNewChat = () => {
+    if (animRef.current)   clearInterval(animRef.current);
+    if (phraseRef.current) clearInterval(phraseRef.current);
+    setMessages([]);
+    setHistory([]);
+    setConversationId(null);
+  };
+
   const send = async (text) => {
     const msg = (text ?? input).trim();
     if (!msg || loading) return;
@@ -321,11 +440,22 @@ export default function Dashboard() {
     startPhraseLoop();
     setMessages(m => [...m, { role: 'user', text: msg }]);
 
+    // Snapshot conversationId at send time (state may change during async)
+    const currentConvId = conversationId;
+
     try {
       const res = await fetch('/api/agent', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ message: msg, conversationHistory: history, userId }),
+        body:    JSON.stringify({
+          message:             msg,
+          conversationHistory: history,
+          userId,
+          recentConversations: conversations.slice(0, 5).map(c => ({
+            title:      c.title,
+            updated_at: c.updated_at,
+          })),
+        }),
       });
 
       const raw = await res.text();
@@ -340,10 +470,11 @@ export default function Dashboard() {
       setLoading(false);
 
       const replyText = data.reply || (data.outfits ? '' : 'Something went wrong — please try again.');
+      const aiMsg     = { role: 'ai', text: replyText, outfits: data.outfits ?? null };
+
       setMessages(prev => {
-        const newMsg  = { role: 'ai', text: replyText, outfits: data.outfits ?? null };
-        const newMsgs = [...prev, newMsg];
-        if (userId) localStorage.setItem(`chat_${userId}`, JSON.stringify({ messages: newMsgs, history: data.history }));
+        const fullMsgs = [...prev, aiMsg];
+        saveConversation(fullMsgs, data.history, currentConvId);
         return [...prev, { role: 'ai', text: '', outfits: data.outfits ?? null }];
       });
 
@@ -357,134 +488,163 @@ export default function Dashboard() {
     }
   };
 
-  const clearChat = () => {
-    if (animRef.current)   clearInterval(animRef.current);
-    if (phraseRef.current) clearInterval(phraseRef.current);
-    setMessages([]);
-    setHistory([]);
-    if (userId) localStorage.removeItem(`chat_${userId}`);
-  };
-
   const isEmpty = messages.length === 0;
 
   return (
-    <div className="flex flex-col h-screen max-h-screen">
+    <div className="flex h-screen max-h-screen">
 
-      {/* Empty state */}
-      <AnimatePresence>
-        {isEmpty && (
-          <motion.div
-            initial={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="flex-1 flex flex-col items-center justify-center px-6 pb-8"
+      {/* ── Chat history sidebar ─────────────────────────────────── */}
+      <aside className="hidden md:flex flex-col w-52 shrink-0 border-r border-border overflow-hidden">
+        {/* New chat */}
+        <div className="shrink-0 px-3 py-3 border-b border-border">
+          <button
+            onClick={startNewChat}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 text-[11px] uppercase tracking-wider border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition"
           >
-            <ShoppingBag className="w-8 h-8 text-primary mb-4" />
-            <h1 className="font-serif text-4xl tracking-tight text-foreground mb-2 text-center">
-              What are we shopping for?
-            </h1>
-            <p className="text-sm text-muted-foreground mb-8 text-center">
-              Describe the occasion, vibe, or trip — I'll handle the rest.
-            </p>
-            <div className="flex flex-wrap gap-2 justify-center max-w-lg">
-              {SUGGESTED.map(s => (
-                <button key={s} onClick={() => send(s)}
-                  className="px-3 py-1.5 border border-border text-[11px] text-muted-foreground uppercase tracking-wider hover:border-foreground/40 hover:text-foreground transition">
-                  {s}
-                </button>
-              ))}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Message thread */}
-      {!isEmpty && (
-        <div className="flex-1 overflow-y-auto px-4 py-8">
-          <div className="max-w-4xl mx-auto space-y-4">
-            <div className="flex justify-end mb-2">
-              <button onClick={clearChat} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition">
-                <Trash2 className="w-3 h-3" /> Clear chat
-              </button>
-            </div>
-
-            {messages.map((msg, i) => (
-              <motion.div key={i}
-                initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.2 }}
-                className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-              >
-                {msg.role === 'user' ? (
-                  <div className="max-w-[70%] px-4 py-3 text-sm leading-relaxed bg-foreground text-background">
-                    {msg.text}
-                  </div>
-                ) : (
-                  <div className="w-full">
-                    {/* Text bubble */}
-                    {msg.text && (
-                      <div className={`px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap inline-block max-w-[75%] ${
-                        msg.isError
-                          ? 'bg-destructive/10 border border-destructive/40 text-destructive'
-                          : 'bg-card border border-border text-foreground'
-                      }`}>
-                        {msg.text}
-                      </div>
-                    )}
-                    {/* Cursor while animating empty reply */}
-                    {!msg.text && !msg.outfits && (
-                      <div className="bg-card border border-border px-4 py-3 inline-block">
-                        <span className="inline-block w-1.5 h-3.5 bg-primary animate-pulse" />
-                      </div>
-                    )}
-                    {/* Outfit cards */}
-                    {msg.outfits && (
-                      <OutfitCarousel outfits={msg.outfits} onSendMessage={send} userId={userId} />
-                    )}
-                  </div>
-                )}
-              </motion.div>
-            ))}
-
-            {loading && (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
-                <div className="bg-card border border-border px-4 py-3 flex gap-1.5 items-center">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
-                  <AnimatePresence mode="wait">
-                    <motion.span
-                      key={loadingPhrase}
-                      initial={{ opacity: 0, y: 4 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -4 }}
-                      transition={{ duration: 0.3 }}
-                      className="text-xs text-muted-foreground"
-                    >
-                      {loadingPhrase}
-                    </motion.span>
-                  </AnimatePresence>
-                </div>
-              </motion.div>
-            )}
-
-            <div ref={bottomRef} />
-          </div>
-        </div>
-      )}
-
-      {/* Input bar */}
-      <div className="shrink-0 border-t border-border p-4">
-        <div className="max-w-3xl mx-auto flex items-end gap-3 bg-card border border-border p-3">
-          <textarea
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
-            placeholder="Tell me what you need…"
-            rows={2}
-            className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground resize-none outline-none leading-relaxed"
-          />
-          <button onClick={() => send()}
-            disabled={loading || !input.trim()}
-            className="shrink-0 w-8 h-8 rounded-full bg-primary flex items-center justify-center hover:opacity-80 transition disabled:opacity-30">
-            <ArrowRight className="w-4 h-4 text-primary-foreground" />
+            <Plus className="w-3.5 h-3.5" /> New chat
           </button>
         </div>
+
+        {/* Conversation list */}
+        <div className="flex-1 overflow-y-auto" style={{ scrollbarWidth: 'none' }}>
+          {conversations.length === 0 ? (
+            <p className="px-4 py-6 text-[10px] text-muted-foreground/40 text-center leading-relaxed">
+              Your saved chats will appear here
+            </p>
+          ) : (
+            conversations.map(conv => (
+              <ConversationItem
+                key={conv.id}
+                conv={conv}
+                active={conv.id === conversationId}
+                onClick={() => loadConversation(conv)}
+                onDelete={() => deleteConversation(conv.id)}
+              />
+            ))
+          )}
+        </div>
+      </aside>
+
+      {/* ── Chat area ────────────────────────────────────────────── */}
+      <div className="flex-1 flex flex-col min-w-0">
+
+        {/* Empty state */}
+        <AnimatePresence>
+          {isEmpty && (
+            <motion.div
+              initial={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="flex-1 flex flex-col items-center justify-center px-6 pb-8"
+            >
+              <ShoppingBag className="w-8 h-8 text-primary mb-4" />
+              <h1 className="font-serif text-4xl tracking-tight text-foreground mb-2 text-center">
+                What are we shopping for?
+              </h1>
+              <p className="text-sm text-muted-foreground mb-8 text-center">
+                Describe the occasion, vibe, or trip — I'll handle the rest.
+              </p>
+              <div className="flex flex-wrap gap-2 justify-center max-w-lg">
+                {SUGGESTED.map(s => (
+                  <button key={s} onClick={() => send(s)}
+                    className="px-3 py-1.5 border border-border text-[11px] text-muted-foreground uppercase tracking-wider hover:border-foreground/40 hover:text-foreground transition">
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Message thread */}
+        {!isEmpty && (
+          <div className="flex-1 overflow-y-auto px-4 py-8">
+            <div className="max-w-4xl mx-auto space-y-4">
+              <div className="flex justify-end mb-2">
+                <button
+                  onClick={startNewChat}
+                  className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition"
+                >
+                  <Plus className="w-3 h-3" /> New chat
+                </button>
+              </div>
+
+              {messages.map((msg, i) => (
+                <motion.div key={i}
+                  initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                >
+                  {msg.role === 'user' ? (
+                    <div className="max-w-[70%] px-4 py-3 text-sm leading-relaxed bg-foreground text-background">
+                      {msg.text}
+                    </div>
+                  ) : (
+                    <div className="w-full">
+                      {msg.text && (
+                        <div className={`px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap inline-block max-w-[75%] ${
+                          msg.isError
+                            ? 'bg-destructive/10 border border-destructive/40 text-destructive'
+                            : 'bg-card border border-border text-foreground'
+                        }`}>
+                          {msg.text}
+                        </div>
+                      )}
+                      {!msg.text && !msg.outfits && (
+                        <div className="bg-card border border-border px-4 py-3 inline-block">
+                          <span className="inline-block w-1.5 h-3.5 bg-primary animate-pulse" />
+                        </div>
+                      )}
+                      {msg.outfits && (
+                        <OutfitCarousel outfits={msg.outfits} onSendMessage={send} userId={userId} />
+                      )}
+                    </div>
+                  )}
+                </motion.div>
+              ))}
+
+              {loading && (
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
+                  <div className="bg-card border border-border px-4 py-3 flex gap-1.5 items-center">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
+                    <AnimatePresence mode="wait">
+                      <motion.span
+                        key={loadingPhrase}
+                        initial={{ opacity: 0, y: 4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -4 }}
+                        transition={{ duration: 0.3 }}
+                        className="text-xs text-muted-foreground"
+                      >
+                        {loadingPhrase}
+                      </motion.span>
+                    </AnimatePresence>
+                  </div>
+                </motion.div>
+              )}
+
+              <div ref={bottomRef} />
+            </div>
+          </div>
+        )}
+
+        {/* Input bar */}
+        <div className="shrink-0 border-t border-border p-4">
+          <div className="max-w-3xl mx-auto flex items-end gap-3 bg-card border border-border p-3">
+            <textarea
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
+              placeholder="Tell me what you need…"
+              rows={2}
+              className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground resize-none outline-none leading-relaxed"
+            />
+            <button onClick={() => send()}
+              disabled={loading || !input.trim()}
+              className="shrink-0 w-8 h-8 rounded-full bg-primary flex items-center justify-center hover:opacity-80 transition disabled:opacity-30">
+              <ArrowRight className="w-4 h-4 text-primary-foreground" />
+            </button>
+          </div>
+        </div>
+
       </div>
     </div>
   );
