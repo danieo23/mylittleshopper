@@ -103,8 +103,9 @@ async function tryHtmlScrape(boardUrl) {
     } catch { /* fall through */ }
   }
 
-  // CDN regex fallback — normalize all sizes to 736x so the Set deduplicates properly
-  if (found.size < 5) {
+  // CDN regex fallback — only used when JSON extraction found nothing at all.
+  // Running it alongside JSON results pulls in related/recommended pins from the sidebar.
+  if (found.size === 0) {
     for (const m of html.matchAll(/https:\/\/i\.pinimg\.com\/(?:736x|474x|236x|originals)\/[a-f0-9/]+\.(?:jpg|jpeg|png|gif|webp)/gi)) {
       const u = m[0].replace(/\/(?:474x|236x|originals)\//, '/736x/');
       if (!u.includes('avatar') && !u.includes('profile') && !u.includes('favicon')) {
