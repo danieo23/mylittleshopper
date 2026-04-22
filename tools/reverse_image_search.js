@@ -29,7 +29,7 @@ export async function reverseImageSearch(imageUrl) {
   const parsePrice = (p) => {
     if (!p) return null;
     if (typeof p === 'number') return p;
-    if (typeof p === 'object') return p.extracted_value ?? parseFloat(String(p.value ?? '').replace(/[^0-9.]/g, '')) || null;
+    if (typeof p === 'object') return p.extracted_value ?? (parseFloat(String(p.value ?? '').replace(/[^0-9.]/g, '')) || null);
     return parseFloat(String(p).replace(/[^0-9.]/g, '')) || null;
   };
 
