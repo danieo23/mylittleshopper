@@ -212,6 +212,8 @@ export default function StyleVault() {
   const [loading, setLoading]     = useState(true);
   const [activeTab, setActiveTab] = useState('wardrobe');
   const [dragOver, setDragOver]   = useState(false);
+  const [analyzingWardrobe, setAnalyzingWardrobe] = useState(false);
+  const [wardrobeAnalyzeMsg, setWardrobeAnalyzeMsg] = useState('');
 
   // Pinterest boards (multiple)
   const [addingBoard, setAddingBoard]   = useState(false);
@@ -294,7 +296,35 @@ export default function StyleVault() {
 
   const removePin = async (pinId) => {
     setAspirationItems(prev => prev.filter(p => p.id !== pinId));
-    await supabase.from('aspiration_items').delete().eq('id', pinId).catch(() => {});
+    const res = await fetch('/api/analyze', {
+      method:  'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ pinId }),
+    });
+    if (!res.ok) load(); // revert optimistic update if delete failed
+  };
+
+  const triggerWardrobeAnalysis = async (uid) => {
+    if (analyzingWardrobe) return;
+    setAnalyzingWardrobe(true);
+    setWardrobeAnalyzeMsg('Analyzing your photos — up to 60 seconds…');
+    try {
+      const res  = await fetch('/api/analyze', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ userId: uid, type: 'wardrobe' }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        setWardrobeAnalyzeMsg(data.error ?? 'Analysis failed — try again.');
+      } else {
+        setWardrobeAnalyzeMsg(`Done — ${data.analyzed} photo${data.analyzed !== 1 ? 's' : ''} analyzed.`);
+      }
+    } catch (err) {
+      setWardrobeAnalyzeMsg(`Something went wrong: ${err.message}`);
+    } finally {
+      setAnalyzingWardrobe(false);
+    }
   };
 
   // Analyzes one board — only replaces pins from that specific board URL
@@ -404,11 +434,7 @@ export default function StyleVault() {
         if (!res.ok) throw new Error(data.error ?? 'Upload failed');
         setItems(prev => [data.item, ...prev]);
       }
-      fetch('/api/analyze', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ userId: me.id, type: 'wardrobe' }),
-      }).catch(() => {});
+      triggerWardrobeAnalysis(me.id);
     } catch (err) {
       setUploadError(`Upload failed: ${err.message}`);
     } finally {
@@ -471,11 +497,23 @@ export default function StyleVault() {
         title="My photos"
         subtitle="The more you upload, the better your shopper knows your look."
         action={
-          <label className="inline-flex items-center gap-2 px-4 py-2 border border-foreground text-foreground text-xs uppercase tracking-widest cursor-pointer hover:bg-foreground hover:text-background transition">
-            <input type="file" multiple accept="image/*,.heic,.heif" className="hidden" onChange={handleUpload} />
-            {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
-            Add photos
-          </label>
+          <div className="flex items-center gap-2">
+            {items.length > 0 && (
+              <button
+                onClick={() => triggerWardrobeAnalysis(userId)}
+                disabled={analyzingWardrobe}
+                className="inline-flex items-center gap-2 px-4 py-2 border border-border text-muted-foreground text-xs uppercase tracking-widest hover:text-foreground hover:border-foreground/40 transition disabled:opacity-40"
+              >
+                {analyzingWardrobe ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ArrowRight className="w-3.5 h-3.5" />}
+                {analyzingWardrobe ? 'Analyzing…' : 'Analyze photos'}
+              </button>
+            )}
+            <label className="inline-flex items-center gap-2 px-4 py-2 border border-foreground text-foreground text-xs uppercase tracking-widest cursor-pointer hover:bg-foreground hover:text-background transition">
+              <input type="file" multiple accept="image/*,.heic,.heif" className="hidden" onChange={handleUpload} />
+              {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+              Add photos
+            </label>
+          </div>
         }
       >
         <div className="flex gap-0 border-b border-border mb-5">
@@ -551,6 +589,12 @@ export default function StyleVault() {
               </div>
             )}
           </div>
+        )}
+
+        {wardrobeAnalyzeMsg && (
+          <p className={`mt-3 text-xs ${wardrobeAnalyzeMsg.startsWith('Done') ? 'text-primary' : 'text-muted-foreground'}`}>
+            {wardrobeAnalyzeMsg}
+          </p>
         )}
       </Section>
 
