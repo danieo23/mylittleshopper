@@ -251,6 +251,7 @@ async function runAgent(message, conversationHistory, userId) {
           if (block.name === 'build_outfits') lastOutfits = result;
           return { type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) };
         } catch (err) {
+          console.error(`[agent] tool error (${block.name}):`, err.message);
           return { type: 'tool_result', tool_use_id: block.id, content: `Error: ${err.message}`, is_error: true };
         }
       })
