@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Upload, Loader2, Plus, X, Check, Pencil, Trash2, ArrowRight, ChevronDown } from 'lucide-react';
+import { Upload, Loader2, Plus, X, Check, Pencil, Trash2, ArrowRight, ChevronDown, ShoppingBag, ExternalLink } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { base44, supabase } from '@/api/client';
 import heic2any from 'heic2any';
 
@@ -35,6 +36,182 @@ const PHOTO_TABS = [
   { key: 'outfit',   label: 'Past Outfits' },
   { key: 'inspo',    label: 'Inspo' },
 ];
+
+// ─── Google Lens helpers ──────────────────────────────────────────
+
+function inferItemCategory(name) {
+  const t = (name ?? '').toLowerCase();
+  if (/pant|trouser|jean|denim|chino|short|skirt|culotte|legging|jogger/.test(t)) return 'Bottoms';
+  if (/dress|romper|jumpsuit|overall/.test(t))                                     return 'Dresses';
+  if (/shoe|sneaker|boot|sandal|loafer|heel|mule|oxford|trainer|slipper/.test(t)) return 'Shoes';
+  if (/jacket|coat|blazer|outerwear|parka|bomber|puffer|trench|windbreaker/.test(t)) return 'Outerwear';
+  if (/sweater|hoodie|sweatshirt|knitwear|pullover|cardigan/.test(t))              return 'Knitwear';
+  if (/shirt|tee|t-shirt|top|blouse|tank|cami|polo|henley|button/.test(t))        return 'Tops';
+  if (/bag|purse|backpack|tote|clutch|handbag/.test(t))                            return 'Bags';
+  if (/hat|cap|beanie|beret|bucket hat/.test(t))                                   return 'Hats';
+  if (/glass|sunglass|goggle|eyewear/.test(t))                                     return 'Eyewear';
+  if (/watch|necklace|earring|bracelet|ring|jewelry|belt|scarf|sock/.test(t))      return 'Accessories';
+  return 'Similar Items';
+}
+
+function groupByItemType(products) {
+  const order  = ['Tops', 'Bottoms', 'Dresses', 'Shoes', 'Outerwear', 'Knitwear', 'Bags', 'Hats', 'Eyewear', 'Accessories', 'Similar Items'];
+  const groups = {};
+  for (const p of products) {
+    const cat = inferItemCategory(p.name);
+    if (!groups[cat]) groups[cat] = [];
+    groups[cat].push(p);
+  }
+  return order.filter(k => groups[k]).map(k => ({ category: k, products: groups[k] }));
+}
+
+// ─── Shoppable pin card ───────────────────────────────────────────
+
+function ShoppablePinCard({ pin, onRemove, userId }) {
+  const [open,        setOpen]        = useState(false);
+  const [fetching,    setFetching]    = useState(false);
+  const [lensResults, setLensResults] = useState(pin.shopping_results ?? null);
+
+  const shopping  = lensResults?.shopping ?? [];
+  const hasShop   = shopping.length > 0;
+  const grouped   = groupByItemType(shopping);
+
+  const fetchLens = async () => {
+    setFetching(true);
+    try {
+      const res  = await fetch('/api/lens', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ imageUrl: pin.image_url, pinId: pin.id, userId }),
+      });
+      const data = await res.json();
+      if (data.shopping_results) setLensResults(data.shopping_results);
+    } catch {}
+    setFetching(false);
+  };
+
+  const handleToggle = () => {
+    if (!open && !hasShop && !fetching) fetchLens();
+    setOpen(o => !o);
+  };
+
+  return (
+    <div className="border border-border bg-card overflow-hidden flex flex-col">
+
+      {/* Pin image */}
+      <div className="relative aspect-[3/4] bg-muted overflow-hidden group">
+        <img src={pin.image_url} alt="" className="w-full h-full object-cover" />
+        <button
+          onClick={() => onRemove(pin.id)}
+          className="absolute top-1.5 right-1.5 z-10 w-6 h-6 flex items-center justify-center bg-black/60 text-white opacity-0 group-hover:opacity-100 transition"
+          title="Remove pin"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+        {/* Style category overlay */}
+        {pin.style_category && (
+          <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/60 to-transparent px-2 pt-4 pb-2">
+            <span className="text-[9px] uppercase tracking-wider text-white/80">
+              {pin.style_category.replace(/_/g, ' ')}
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Shop toggle bar */}
+      <button
+        onClick={handleToggle}
+        className="flex items-center justify-between px-3 py-2.5 border-t border-border text-[10px] uppercase tracking-wider text-muted-foreground hover:text-foreground hover:bg-secondary/40 transition w-full"
+      >
+        <span className="flex items-center gap-1.5">
+          <ShoppingBag className="w-3 h-3" />
+          Shop this look
+          {hasShop && <span className="text-muted-foreground/40">· {shopping.length}</span>}
+        </span>
+        {fetching
+          ? <Loader2 className="w-3 h-3 animate-spin" />
+          : <ChevronDown className={`w-3 h-3 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
+        }
+      </button>
+
+      {/* Expandable drawer */}
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: 'easeInOut' }}
+            className="overflow-hidden border-t border-border"
+          >
+            {fetching ? (
+              <div className="py-6 flex items-center justify-center gap-2 text-xs text-muted-foreground">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Finding products…
+              </div>
+
+            ) : !hasShop ? (
+              <div className="py-5 px-3 text-center space-y-2">
+                <p className="text-[10px] text-muted-foreground/50 uppercase tracking-wider">No products found</p>
+                <button
+                  onClick={fetchLens}
+                  className="text-xs text-primary hover:underline"
+                >
+                  Try again
+                </button>
+              </div>
+
+            ) : (
+              <div className="py-3 space-y-4">
+                {grouped.map(({ category, products }) => (
+                  <div key={category}>
+                    <div className="text-[9px] uppercase tracking-[0.15em] text-muted-foreground/60 px-3 mb-2">
+                      {category}
+                    </div>
+                    <div
+                      className="flex gap-2 overflow-x-auto px-3 pb-1"
+                      style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+                    >
+                      {products.slice(0, 8).map((p, i) => (
+                        <a
+                          key={i}
+                          href={p.product_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="shrink-0 w-20 group/item"
+                        >
+                          <div className="aspect-square bg-secondary overflow-hidden mb-1">
+                            {p.image_url
+                              ? <img
+                                  src={p.image_url}
+                                  alt={p.name}
+                                  className="w-full h-full object-cover group-hover/item:scale-105 transition-transform duration-300"
+                                  onError={e => { e.currentTarget.style.display = 'none'; }}
+                                />
+                              : <div className="w-full h-full flex items-center justify-center">
+                                  <ShoppingBag className="w-4 h-4 text-muted-foreground/20" />
+                                </div>
+                            }
+                          </div>
+                          <div className="text-[9px] text-foreground leading-snug line-clamp-2 group-hover/item:text-primary transition">
+                            {p.name}
+                          </div>
+                          <div className="text-[9px] text-muted-foreground/60 mt-0.5 truncate">
+                            {p.store}{p.price ? ` · $${p.price}` : ''}
+                          </div>
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+    </div>
+  );
+}
 
 // ─── Sub-components ───────────────────────────────────────────────
 
@@ -662,57 +839,19 @@ export default function StyleVault() {
 
       {/* Shoppable Pinterest pins */}
       {aspirationItems.length > 0 && (
-        <Section title="Shoppable pins" subtitle="Your Pinterest board — analyzed and matched to real products.">
+        <Section title="Shoppable pins" subtitle="Tap 'Shop this look' on any pin to browse products Google Lens found — sorted by item.">
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
             {aspirationItems
               .filter((pin, i, arr) => arr.findIndex(p => p.image_url === pin.image_url) === i)
-              .map(pin => {
-              const shopping = pin.shopping_results?.shopping ?? [];
-              const topShop  = shopping[0];
-              return (
-                <div key={pin.id} className="border border-border bg-card overflow-hidden relative group">
-                  {/* Delete button */}
-                  <button
-                    onClick={() => removePin(pin.id)}
-                    className="absolute top-1.5 right-1.5 z-10 w-6 h-6 flex items-center justify-center bg-black/60 text-white opacity-0 group-hover:opacity-100 transition"
-                    title="Remove pin"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                  {/* Pin image */}
-                  <div className="aspect-square bg-muted overflow-hidden">
-                    <img src={pin.image_url} alt="" className="w-full h-full object-cover" />
-                  </div>
-                  {/* Style tags */}
-                  <div className="p-3 border-t border-border">
-                    <div className="flex flex-wrap gap-1 mb-2">
-                      {pin.style_category && (
-                        <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 border border-primary/40 text-primary">{pin.style_category.replace(/_/g, ' ')}</span>
-                      )}
-                      {pin.fit_type && (
-                        <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 border border-border text-muted-foreground">{pin.fit_type}</span>
-                      )}
-                    </div>
-                    {/* Top shopping result */}
-                    {topShop ? (
-                      <a href={topShop.product_url} target="_blank" rel="noopener noreferrer"
-                        className="flex items-center gap-2 group">
-                        {topShop.image_url && (
-                          <img src={topShop.image_url} alt="" className="w-8 h-8 object-cover border border-border shrink-0" />
-                        )}
-                        <div className="min-w-0">
-                          <div className="text-xs text-foreground truncate group-hover:text-primary transition">{topShop.name}</div>
-                          <div className="text-[10px] text-muted-foreground">{topShop.store} · ${topShop.price}</div>
-                        </div>
-                        <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0 ml-auto group-hover:text-primary transition" />
-                      </a>
-                    ) : (
-                      <p className="text-[10px] text-muted-foreground/50 uppercase tracking-wider">No shop match found</p>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+              .map(pin => (
+                <ShoppablePinCard
+                  key={pin.id}
+                  pin={pin}
+                  onRemove={removePin}
+                  userId={userId}
+                />
+              ))
+            }
           </div>
         </Section>
       )}
