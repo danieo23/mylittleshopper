@@ -23,11 +23,13 @@ async function inBatches(items, fn, size = 3) {
 
 // ── Wardrobe analysis ─────────────────────────────────────────────
 async function analyzeWardrobe(userId) {
+  // Filter on style_category IS NULL — avoids dependency on the `analyzed` boolean column
+  // which may be missing or null on older rows. Re-runs if style_category is still null after a failed pass.
   const { data: items } = await supabase
     .from('wardrobe_items')
     .select('id, image_url')
     .eq('user_id', userId)
-    .eq('analyzed', false);
+    .is('style_category', null);
 
   if (!items?.length) return { analyzed: 0 };
 
@@ -36,11 +38,10 @@ async function analyzeWardrobe(userId) {
     const result = await analyzeImageStyle(item.image_url, 'wardrobe');
     if (result.skip_reason) return;
     await supabase.from('wardrobe_items').update({
-      analyzed:             true,
       colors:               result.dominant_colors,
       fit_type:             result.fit_type,
       formality_score:      result.formality_score,
-      style_category:       result.style_category,
+      style_category:       result.style_category ?? 'unclassified',
       brand:                result.brand,
       fabric:               result.fabric,
       occasion_suitability: result.occasion_suitability,
