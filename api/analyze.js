@@ -23,15 +23,15 @@ async function inBatches(items, fn, size = 3) {
 
 // ── Wardrobe analysis ─────────────────────────────────────────────
 async function analyzeWardrobe(userId) {
-  // Filter on style_category IS NULL — avoids dependency on the `analyzed` boolean column
-  // which may be missing or null on older rows. Re-runs if style_category is still null after a failed pass.
-  const { data: items } = await supabase
+  // Fetch all items then filter in JS — avoids silent failure when style_category
+  // column doesn't exist yet (Supabase returns null data, not an empty array).
+  const { data: allItems } = await supabase
     .from('wardrobe_items')
-    .select('id, image_url')
-    .eq('user_id', userId)
-    .is('style_category', null);
+    .select('*')
+    .eq('user_id', userId);
 
-  if (!items?.length) return { analyzed: 0 };
+  const items = (allItems ?? []).filter(i => !i.style_category);
+  if (!items.length) return { analyzed: 0 };
 
   let analyzed = 0;
   await inBatches(items, async (item) => {
