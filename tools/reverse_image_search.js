@@ -26,10 +26,17 @@ export async function reverseImageSearch(imageUrl) {
   console.log('[lens] visual_matches count:', data.visual_matches?.length ?? 0);
   console.log('[lens] first shopping result:', JSON.stringify(data.shopping_results?.[0] ?? null));
 
+  const parsePrice = (p) => {
+    if (!p) return null;
+    if (typeof p === 'number') return p;
+    if (typeof p === 'object') return p.extracted_value ?? parseFloat(String(p.value ?? '').replace(/[^0-9.]/g, '')) || null;
+    return parseFloat(String(p).replace(/[^0-9.]/g, '')) || null;
+  };
+
   // Explicit shopping results
   const fromShopping = (data.shopping_results ?? []).map(item => ({
     name:        item.title,
-    price:       item.price ? parseFloat(item.price.replace(/[^0-9.]/g, '')) : null,
+    price:       parsePrice(item.price),
     store:       item.source,
     product_url: item.link,
     image_url:   item.thumbnail,
@@ -39,7 +46,7 @@ export async function reverseImageSearch(imageUrl) {
   // Visual matches — these almost always exist and also link to shoppable pages
   const fromVisual = (data.visual_matches ?? []).slice(0, 20).map(m => ({
     name:        m.title,
-    price:       m.price ? parseFloat(m.price.replace(/[^0-9.]/g, '')) : null,
+    price:       parsePrice(m.price),
     store:       m.source,
     product_url: m.link,
     image_url:   m.thumbnail,
