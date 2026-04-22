@@ -195,21 +195,39 @@ export default function Onboarding() {
   const removePhoto = (category, url) =>
     setUploads(u => ({ ...u, [category]: u[category].filter(x => x !== url) }));
 
+  const saveProfile = async () => {
+    const me = await base44.auth.me();
+    await base44.entities.StyleProfile.create({
+      user_id:             me.id,
+      budget_tier:         data.budget_tier,
+      favorite_stores:     data.favorite_stores,
+      style_tags:          data.style_tags,
+      color_palettes:      data.color_palettes,
+      pinterest_board_url: data.pinterest_board_url || null,
+      sizes:               data.sizes,
+    });
+  };
+
   const finish = async () => {
     setSaving(true);
     setSaveError('');
     try {
-      const me = await base44.auth.me();
-      await base44.entities.StyleProfile.create({
-        user_id: me.id,
-        budget_tier: data.budget_tier,
-        favorite_stores: data.favorite_stores,
-        style_tags: data.style_tags,
-        color_palettes: data.color_palettes,
-        pinterest_board_url: data.pinterest_board_url || null,
-        sizes: data.sizes,
-      });
+      await saveProfile();
       navigate('/dashboard');
+    } catch (e) {
+      console.error(e);
+      setSaveError(e.message || 'Something went wrong. Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const goToQuiz = async () => {
+    setSaving(true);
+    setSaveError('');
+    try {
+      await saveProfile();
+      navigate('/style-quiz');
     } catch (e) {
       console.error(e);
       setSaveError(e.message || 'Something went wrong. Please try again.');
@@ -448,26 +466,35 @@ export default function Onboarding() {
             </div>
           )}
 
-          {/* ── Step 6: Done ── */}
+          {/* ── Step 6: Done / Quiz entry ── */}
           {step === 6 && (
             <div className="text-center py-8">
               <div className="w-16 h-16 rounded-full bg-primary/10 border border-primary/30 flex items-center justify-center mx-auto mb-6">
                 <Check className="w-7 h-7 text-primary" />
               </div>
-              <h2 className="font-serif text-4xl tracking-tight mb-3">Your shopper is ready.</h2>
+              <h2 className="font-serif text-4xl tracking-tight mb-3">Almost done.</h2>
               <p className="text-sm text-muted-foreground mb-2 max-w-sm mx-auto">
-                Profile saved. Your shopper knows your budget, stores, style, and colors.
+                One last step — a quick style quiz so your shopper knows exactly what you love to wear.
               </p>
               <p className="text-xs text-muted-foreground/60 max-w-sm mx-auto mb-10">
-                The more you shop, the smarter it gets. You can always update your Style Vault later.
+                Takes 2 minutes. The more you tell it, the smarter your picks.
               </p>
               <button
-                onClick={finish}
+                onClick={goToQuiz}
                 disabled={saving}
                 className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-8 py-3.5 text-sm hover:opacity-90 transition disabled:opacity-50"
               >
-                {saving ? 'Saving…' : 'Start shopping'} <ArrowRight className="w-3.5 h-3.5" />
+                {saving ? 'Saving…' : 'Take the Style Quiz'} <ArrowRight className="w-3.5 h-3.5" />
               </button>
+              <div className="mt-4">
+                <button
+                  onClick={finish}
+                  disabled={saving}
+                  className="text-xs text-muted-foreground hover:text-foreground transition"
+                >
+                  Skip and go to dashboard
+                </button>
+              </div>
               {saveError && (
                 <p className="mt-4 text-xs text-destructive max-w-sm mx-auto">{saveError}</p>
               )}
