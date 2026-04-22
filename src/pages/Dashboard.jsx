@@ -50,9 +50,9 @@ function ProductCard({ item, onReroll, onDislike }) {
         {url && (
           <a
             href={url} target="_blank" rel="noopener noreferrer"
-            className="absolute inset-0 flex items-end justify-end p-2 opacity-0 group-hover:opacity-100 transition bg-gradient-to-t from-black/30 to-transparent"
+            className="absolute inset-0 flex items-end justify-end p-2 bg-gradient-to-t from-black/40 to-transparent"
           >
-            <ExternalLink className="w-4 h-4 text-white" />
+            <ExternalLink className="w-4 h-4 text-white drop-shadow" />
           </a>
         )}
       </div>

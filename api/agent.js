@@ -220,12 +220,15 @@ async function runAgent(message, conversationHistory, userId) {
   const LOOP_TOKENS = 4096;
 
   let lastOutfits      = null;
-  let hasSearchResults = false; // only true when search_products returned actual products
+  let hasSearchResults = false;
   const MAX_TURNS      = 4;
   let turns            = 0;
 
-  // tool_choice:'any' only when we have real results to build from.
-  // Using it when searches failed would trap Claude in a forced-tool retry loop.
+  // Full product objects keyed by category — Claude only sees names/prices in
+  // its context window; we keep the authoritative data here so build_outfits
+  // always has image_url, product_url, etc. regardless of what Claude passes back.
+  const productCache = {};
+
   const toolChoice = () =>
     hasSearchResults && !lastOutfits ? { type: 'any' } : { type: 'auto' };
 
@@ -246,11 +249,36 @@ async function runAgent(message, conversationHistory, userId) {
     const toolResults = await Promise.all(
       toolUseBlocks.map(async (block) => {
         try {
-          const result = await executeTool(block.name, block.input, userId, userProfile);
-          if (block.name === 'search_products' && Array.isArray(result) && result.length > 0) {
-            hasSearchResults = true;
+          let result;
+
+          if (block.name === 'search_products') {
+            result = await executeTool(block.name, block.input, userId, userProfile);
+            if (Array.isArray(result) && result.length > 0) {
+              hasSearchResults = true;
+              productCache[block.input.category] = result; // cache full objects
+            }
+
+          } else if (block.name === 'build_outfits') {
+            // Merge Claude's category list with our cached full product objects
+            // so image_url/product_url survive even if Claude stripped them.
+            const categories = Object.keys(block.input.products_by_category ?? {});
+            const enriched = {};
+            for (const cat of categories) {
+              enriched[cat] = productCache[cat] ?? block.input.products_by_category[cat] ?? [];
+            }
+            result = await buildOutfits({
+              scoredProducts: enriched,
+              styleDna:       userProfile.styleDna,
+              wardrobeItems:  userProfile.wardrobeItems,
+              budget:         block.input.budget,
+              occasion:       block.input.occasion,
+            });
+            lastOutfits = result;
+
+          } else {
+            result = await executeTool(block.name, block.input, userId, userProfile);
           }
-          if (block.name === 'build_outfits') lastOutfits = result;
+
           return { type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) };
         } catch (err) {
           console.error(`[agent] tool error (${block.name}):`, err.message);
