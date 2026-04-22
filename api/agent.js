@@ -76,6 +76,42 @@ const TOOLS = [
   },
 ];
 
+// ── Hex → readable color name ──────────────────────────────────────
+// Used so search queries contain "navy beige" not "#1a237e #f5f5dc"
+function hexToBucket(hex) {
+  if (!hex || typeof hex !== 'string') return null;
+  const h = hex.replace('#', '').padEnd(6, '0');
+  const r = parseInt(h.slice(0,2), 16) || 0;
+  const g = parseInt(h.slice(2,4), 16) || 0;
+  const b = parseInt(h.slice(4,6), 16) || 0;
+  const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+  const max = Math.max(r, g, b);
+  const sat = max === 0 ? 0 : (max - Math.min(r, g, b)) / max;
+  if (brightness < 35)                 return 'black';
+  if (brightness > 220 && sat < 0.1)  return 'white';
+  if (sat < 0.15) {
+    if (brightness < 80)  return 'charcoal';
+    if (brightness < 150) return 'gray';
+    return 'off-white';
+  }
+  let hue = Math.atan2(Math.sqrt(3) * (g - b), 2 * r - g - b) * (180 / Math.PI);
+  if (hue < 0) hue += 360;
+  if (sat < 0.35 && brightness > 100 && r >= g && r >= b) {
+    if (brightness > 200) return 'cream';
+    if (brightness > 160) return 'beige';
+    if (brightness > 120) return 'tan';
+    return 'camel';
+  }
+  if (hue < 20 || hue >= 345) return brightness < 100 ? 'burgundy' : 'red';
+  if (hue < 40)  return brightness < 120 ? 'rust' : 'orange';
+  if (hue < 70)  return sat < 0.4 ? 'sand' : 'yellow';
+  if (hue < 165) return sat < 0.5 ? 'olive' : 'green';
+  if (hue < 200) return 'teal';
+  if (hue < 240) return brightness < 80 ? 'navy' : brightness < 150 ? 'cobalt' : 'blue';
+  if (hue < 295) return 'purple';
+  return 'pink';
+}
+
 // ── System prompt ──────────────────────────────────────────────────
 function buildSystemPrompt(userProfile) {
   const { styleDna, confidenceLevel, imageCount, wallet,
@@ -87,8 +123,12 @@ function buildSystemPrompt(userProfile) {
     ? Object.entries(sizes).filter(([,v]) => v).map(([k, v]) => `${k}: ${v}`).join(', ')
     : 'not set — do not ask, tell the user to add them in Style Vault';
 
-  const profileComplete = imageCount > 0;
   const dnaActive = !!(dna.primary_style_category || dna.dominant_fit || dna.primary_colors?.length);
+
+  // Convert hex palette to readable names for use in search queries
+  const primaryColorNames   = [...new Set((dna.primary_colors   ?? []).map(hexToBucket).filter(Boolean))].slice(0, 4);
+  const secondaryColorNames = [...new Set((dna.secondary_colors ?? []).map(hexToBucket).filter(Boolean))].slice(0, 3);
+  const avoidedColorNames   = [...new Set((dna.avoided_colors   ?? []).map(hexToBucket).filter(Boolean))];
 
   return `You are the mylilshopper AI — a personal shopping agent. Your job is to find exactly the right clothes for this specific person by deeply understanding their style profile and asking the right questions before searching.
 
@@ -100,9 +140,9 @@ USER PROFILE (do not call any tool to fetch this — it is complete):
 - Primary style: ${dna.primary_style_category ?? 'not yet determined'}
 - Secondary styles: ${dna.secondary_categories?.join(', ') || 'none'}
 - Dominant fit: ${dna.dominant_fit ?? 'not yet determined'}
-- Primary colors: ${dna.primary_colors?.join(', ') || 'not determined'}
-- Secondary colors: ${dna.secondary_colors?.join(', ') || 'none'}
-- Avoided colors: ${dna.avoided_colors?.join(', ') || 'none identified'}
+- Primary colors: ${primaryColorNames.length ? primaryColorNames.join(', ') : 'not determined'}
+- Secondary colors: ${secondaryColorNames.length ? secondaryColorNames.join(', ') : 'none'}
+- Avoided colors: ${avoidedColorNames.length ? avoidedColorNames.join(', ') : 'none identified'}
 - Formality range: ${dna.formality_range_min ?? '?'}–${dna.formality_range_max ?? '?'}/10
 - Brand affinities: ${dna.brand_affinities?.join(', ') || 'none'}
 - Brand rejections: ${dna.brand_rejections?.join(', ') || 'none'}
@@ -145,13 +185,20 @@ NEVER ask about:
 
 Every search query must embed the user's actual style attributes. Never search generically.
 ${dnaActive ? `
-Build queries like this (combine ALL relevant attributes):
-  Fit: "${dna.dominant_fit ?? 'relaxed'}"
-  Colors: "${dna.primary_colors?.slice(0,2).join(', ') ?? 'neutral'}"
-  Style: "${dna.primary_style_category ?? (styleTags?.[0] ?? 'minimal')}"
-  → Example query: "${dna.dominant_fit ?? 'relaxed'} ${dna.primary_colors?.[0] ?? 'neutral'} ${dna.primary_style_category ?? 'minimal'} linen midi dress"
+Query formula — combine these in every search string:
+  [fit] [color1] [color2] [style] [item] [occasion keyword]
+
+  Fit:     "${dna.dominant_fit ?? 'relaxed'}"
+  Colors:  "${primaryColorNames.slice(0,2).join(' ') || 'neutral'}"
+  Style:   "${dna.primary_style_category ?? (styleTags?.[0] ?? 'minimal')}"
+
+  Good example:  "${dna.dominant_fit ?? 'relaxed'} ${primaryColorNames[0] ?? 'neutral'} ${dna.primary_style_category ?? 'minimal'} midi dress summer"
+  Bad example:   "midi dress"  ← never this vague
+
+Color words must be plain English (black, navy, beige, etc.) — never hex codes.
 ` : `
-Profile is still building — use style tags (${styleTags?.join(', ') || 'none'}) and aspiration gap to guide queries.
+Profile is still building — use style tags (${styleTags?.join(', ') || 'none'}) and aspiration gap.
+Query formula: [style tag] [item] [occasion] — e.g. "${styleTags?.[0] ?? 'minimal'} relaxed trousers casual"
 `}
 Cross-reference with wardrobe before building outfits — don't suggest items they likely already own based on their existing style.
 Prioritize aspiration gap items — these are things they want but don't have yet.
