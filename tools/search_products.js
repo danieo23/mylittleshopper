@@ -11,7 +11,7 @@
  *   SHOPPING_API_PROVIDER=serpapi   # or 'rapidapi'
  */
 
-const PROVIDER = process.env.SHOPPING_API_PROVIDER ?? 'serpapi';
+const PROVIDER = process.env.SHOPPING_API_PROVIDER || 'serpapi';
 const API_KEY  = process.env.SHOPPING_API_KEY;
 
 /**
