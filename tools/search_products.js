@@ -54,10 +54,12 @@ async function _searchViaSerpApi({ query, maxPrice }) {
       name:        p.title,
       price:       parseFloat(p.price.replace(/[^0-9.]/g, '')),
       store:       p.source,
-      image_url:        p.thumbnail,
-      all_images:       p.images?.length ? p.images : (p.thumbnail ? [p.thumbnail] : []),
+      image_url:   p.thumbnail,
+      // Always include thumbnail first, then any additional images SerpAPI returns.
+      // De-duped so the thumbnail doesn't appear twice if it's also in p.images.
+      all_images:  [...new Set([p.thumbnail, ...(p.images ?? [])].filter(Boolean))],
       product_url: p.link,
-      // Style attributes extracted later via analyze_image_style if needed
+      serpapi_product_link: p.serpapi_product_api_link ?? null,
       colors:         null,
       style_category: null,
       fit_type:       null,

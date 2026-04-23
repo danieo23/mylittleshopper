@@ -125,13 +125,23 @@ function parseRequestSlots(text) {
   let idx = 0;
 
   const W2N = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6 };
+  // Returns the explicit count if the user stated one, or null if they didn't.
+  // null = "show me options" mode → display 3-5 results for that slot.
   function countFor(itemRe) {
     const m = t.match(new RegExp(`(\\d+|one|two|three|four|five|six)\\s+${itemRe}`, 'i'));
-    if (!m) return 1;
+    if (!m) return null;
     return parseInt(m[1]) || W2N[m[1]] || 1;
   }
-  function add(key, n = 1) {
-    for (let i = 0; i < n; i++) slots.push({ ...SLOT_DEFS[key], id: `${SLOT_DEFS[key].category}_${idx++}` });
+  // explicitCount === null means user didn't specify → show_options mode
+  function add(key, explicitCount = null) {
+    const n = explicitCount ?? 1;
+    for (let i = 0; i < n; i++) {
+      slots.push({
+        ...SLOT_DEFS[key],
+        id:           `${SLOT_DEFS[key].category}_${idx++}`,
+        show_options: explicitCount === null,
+      });
+    }
   }
 
   // ── Tops (order matters: most specific first) ──
@@ -299,28 +309,36 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget) {
 
 /**
  * Build a deterministic product card from filled slots.
- * Picks the top-scored UNIQUE product per slot — global dedup ensures
- * the same product never appears twice even if slot pools overlap.
+ *
+ * Explicit count (user said "2 graphic tees"):
+ *   → Pick exactly 1 unique product per slot. Global dedup prevents repeats.
+ *
+ * No count specified (user said "graphic tee" or "a flannel"):
+ *   → show_options = true → show top 4 options for that slot so the user
+ *     can browse. This gives 5-10 total items for a typical multi-category
+ *     request without a count ("summer clothes" → tees x4 + shorts x4).
  */
 function buildShoppingBoard(requiredSlots, slotCache) {
-  const catLabel    = { tops: 'top', bottoms: 'bottom', shoes: 'shoes', outerwear: 'outerwear', dress: 'dress', accessories: 'accessory' };
-  const usedNames   = new Set();
-  const nameKey     = name => (name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40);
+  const catLabel = { tops: 'top', bottoms: 'bottom', shoes: 'shoes', outerwear: 'outerwear', dress: 'dress', accessories: 'accessory' };
+  const usedNames = new Set();
+  const nameKey   = name => (name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40);
+  const items     = [];
 
-  const items = requiredSlots.map(slot => {
-    const candidates = slotCache[slot.id] ?? [];
-    // Find the first candidate whose name hasn't been used in this board
-    const best = candidates.find(p => !usedNames.has(nameKey(p.name)));
-    if (!best) return null;
-    usedNames.add(nameKey(best.name));
-    return {
-      category:     catLabel[slot.category] ?? slot.category,
-      product_name: best.name,
-      product:      best,
-      _slot_id:     slot.id,
-      _subtype:     slot.label,
-    };
-  }).filter(Boolean);
+  for (const slot of requiredSlots) {
+    const pool  = (slotCache[slot.id] ?? []).filter(p => !usedNames.has(nameKey(p.name)));
+    const picks = slot.show_options ? pool.slice(0, 4) : pool.slice(0, 1);
+
+    for (const p of picks) {
+      usedNames.add(nameKey(p.name));
+      items.push({
+        category:     catLabel[slot.category] ?? slot.category,
+        product_name: p.name,
+        product:      p,
+        _slot_id:     slot.id,
+        _subtype:     slot.label,
+      });
+    }
+  }
 
   const total = items.reduce((s, i) => s + (i.product?.price ?? 0), 0);
   return [{ outfit_name: 'Your Shopping Picks', items, total_price: Math.round(total * 100) / 100, style_note: null, wardrobe_multiplier: 1 }];
