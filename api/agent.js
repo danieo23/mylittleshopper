@@ -197,44 +197,70 @@ function buildSlotQuery(slot, genderPrefix, dna, occasion) {
  * Execute one search per slot in parallel. Returns { slotId: products[] }.
  */
 async function fillSlots(requiredSlots, userProfile, occasion, budget) {
-  const dna           = userProfile.styleDna;
-  const gender        = userProfile.profile?.gender;
-  const genderPrefix  = gender === 'male' ? "men's" : gender === 'female' ? "women's" : "unisex";
-  const dislikedNames = (dna?.explicit_dislikes?.product_names ?? [])
+  const dna              = userProfile.styleDna;
+  const gender           = userProfile.profile?.gender ?? userProfile.gender;
+  const genderPrefix     = gender === 'men' ? "men's" : gender === 'nonbinary' ? 'unisex' : "women's";
+  const opennessTiers    = userProfile.storeOpennessTiers ?? [];
+  const wantsBoutique    = opennessTiers.includes('mixed') || opennessTiers.includes('open');
+  const wantsThrift      = opennessTiers.includes('mixed') || opennessTiers.includes('open');
+  const dislikedNames    = (dna?.explicit_dislikes?.product_names ?? [])
     .map(n => n.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 50));
 
   const slotCache = {};
 
+  const normalize = (p, slotId, subtype) => ({
+    ...p,
+    _score:   scoreProductMatch(p, dna, occasion).score,
+    _slot_id: slotId,
+    _subtype: subtype,
+  });
+
+  const applyFilters = (scored, slot) => {
+    const kwFiltered = slot.keywords?.length
+      ? scored.filter(p => slot.keywords.some(kw => (p.name ?? '').toLowerCase().includes(kw)))
+      : scored;
+    const candidates = kwFiltered.length >= 2 ? kwFiltered : scored;
+    return candidates.filter(p => {
+      const key = (p.name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 50);
+      return !dislikedNames.includes(key);
+    });
+  };
+
   await Promise.all(requiredSlots.map(async slot => {
     try {
-      const query = buildSlotQuery(slot, genderPrefix, dna, occasion);
-      console.log(`[slot] ${slot.id} | "${slot.label}" | query: "${query}"`);
+      const mainQuery = buildSlotQuery(slot, genderPrefix, dna, occasion);
+      console.log(`[slot] ${slot.id} | "${slot.label}" | query: "${mainQuery}"`);
 
-      const raw    = await searchProducts({ query, category: slot.category, maxPrice: budget });
-      const scored = raw.map(p => ({
-        ...p,
-        _score:   scoreProductMatch(p, dna, occasion).score,
-        _slot_id: slot.id,
-        _subtype: slot.label,
-      }));
+      // Build augmented queries for boutique/thrift tiers (run in parallel with main search)
+      const extraQueries = [];
+      if (wantsBoutique) {
+        extraQueries.push(`${genderPrefix} boutique indie ${slot.modifiers}`);
+      }
+      if (wantsThrift) {
+        extraQueries.push(`${genderPrefix} thrift vintage secondhand ${slot.modifiers}`);
+      }
 
-      // Keyword filter scoped to this slot's specific item type
-      const kwFiltered = slot.keywords?.length
-        ? scored.filter(p => slot.keywords.some(kw => (p.name ?? '').toLowerCase().includes(kw)))
-        : scored;
+      const [mainRaw, ...extraRaws] = await Promise.all([
+        searchProducts({ query: mainQuery, category: slot.category, maxPrice: budget }),
+        ...extraQueries.map(q => searchProducts({ query: q, category: slot.category, maxPrice: budget }).catch(() => [])),
+      ]);
 
-      // Fall back to all results if keyword filter is too strict (< 2 matches)
-      const candidates = kwFiltered.length >= 2 ? kwFiltered : scored;
-
-      // Remove explicitly disliked products by name
-      const clean = candidates.filter(p => {
-        const key = (p.name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 50);
-        return !dislikedNames.includes(key);
+      // Merge all results, dedupe by name, score everything
+      const allRaw = [...mainRaw, ...extraRaws.flat()];
+      const seen   = new Set();
+      const unique = allRaw.filter(p => {
+        const key = (p.name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
       });
 
-      slotCache[slot.id] = clean.sort((a, b) => b._score - a._score).slice(0, 8);
+      const scored  = unique.map(p => normalize(p, slot.id, slot.label));
+      const clean   = applyFilters(scored, slot);
 
-      console.log(`[slot] ${slot.id}: ${raw.length} raw → ${kwFiltered.length} kw-filtered → ${slotCache[slot.id].length} final (fallback: ${kwFiltered.length < 2})`);
+      slotCache[slot.id] = clean.sort((a, b) => b._score - a._score).slice(0, 10);
+
+      console.log(`[slot] ${slot.id}: ${mainRaw.length} main + ${extraRaws.flat().length} augmented → ${slotCache[slot.id].length} final`);
     } catch (err) {
       console.error(`[slot] ${slot.id} search failed:`, err.message);
       slotCache[slot.id] = [];

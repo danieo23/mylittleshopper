@@ -14,14 +14,32 @@ const STYLE_TAGS = [
 ];
 
 const POPULAR_STORES = [
-  'Zara', 'H&M', 'ASOS', 'Uniqlo', 'Urban Outfitters', 'Mango', 'COS', '& Other Stories',
-  'Pull&Bear', 'Massimo Dutti', 'Nordstrom', "Macy's", 'Bloomingdale\'s', 'Saks Fifth Avenue',
-  'Revolve', 'SSENSE', 'Farfetch', 'Net-a-Porter', 'Matches Fashion',
-  'Nike', 'Adidas', 'New Balance', 'Lululemon', 'Vuori',
-  'Everlane', 'Reformation', 'Frank And Oak', 'Banana Republic', 'J.Crew', 'Gap',
-  'Club Monaco', 'Theory', 'Rag & Bone', 'Acne Studios', 'A.P.C.',
-  'Ralph Lauren', 'Tommy Hilfiger', 'Calvin Klein', 'Carhartt WIP', 'Stüssy',
-  'Supreme', 'Palace', 'Noah', 'Kith', 'Free People', 'Anthropologie',
+  // Department / mainstream
+  'Nordstrom', "Macy's", "Bloomingdale's", 'Saks Fifth Avenue', 'Neiman Marcus', "Dillard's", "Kohl's",
+  // Fast fashion & accessible
+  'Zara', 'H&M', 'ASOS', 'Uniqlo', 'Urban Outfitters', 'Mango', 'Gap', 'Old Navy', 'Target',
+  'Forever 21', 'Fashion Nova', 'Shein', 'Primark', 'Boohoo',
+  // American casual
+  'American Eagle', 'Abercrombie', 'Hollister', 'Pacsun', "Levi's", 'Banana Republic', 'J.Crew', 'Club Monaco',
+  // Athletic & outdoor
+  'Nike', 'Adidas', 'New Balance', 'Puma', 'Under Armour', 'Reebok', 'Converse', 'Vans',
+  'Lululemon', 'Vuori', 'On Running', 'ASICS',
+  // Streetwear & hype
+  'Supreme', 'Stüssy', 'Kith', 'Carhartt WIP', 'Palace', 'BAPE', 'Essentials', 'Brain Dead',
+  // Contemporary / premium
+  'Revolve', 'SSENSE', 'Farfetch', 'Net-a-Porter', 'Grailed',
+  'Rag & Bone', 'Theory', 'COS', '& Other Stories', 'Acne Studios', 'A.P.C.',
+  'Ralph Lauren', 'Tommy Hilfiger', 'Calvin Klein', 'Todd Snyder',
+  // Indie & sustainable
+  'Everlane', 'Reformation', 'Allbirds', 'Patagonia', 'Mara Hoffman',
+  // Boho / Free People universe
+  'Free People', 'Anthropologie',
+  // European accessible
+  'Pull&Bear', 'Massimo Dutti',
+  // Thrift & resale
+  'Depop', 'ThredUp', 'Poshmark', 'Vinted', 'Mercari', 'TheRealReal', 'eBay',
+  // Marketplace
+  'Amazon Fashion', 'TikTok Shop', 'Etsy',
 ];
 
 const SIZE_OPTIONS = {
