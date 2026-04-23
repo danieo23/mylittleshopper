@@ -189,7 +189,7 @@ function parseRequestSlots(text) {
  * Build a style-aware search query for a specific slot.
  * Always incorporates DNA (fit, color, style) and style tags — profile is always active.
  */
-function buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags = []) {
+function buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags = [], ageStyleDefault = '') {
   // Fit only makes sense for bottoms/outerwear — tops are item-specific enough
   const TOP_SLOT_KEYS = ['graphic_tee','band_tee','polo','tank_top','button_down','linen_shirt','oversized_tee','generic_top'];
   const slotKey = Object.entries(SLOT_DEFS).find(([, def]) =>
@@ -198,12 +198,13 @@ function buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags = []) {
   const fit   = dna?.dominant_fit && !TOP_SLOT_KEYS.includes(slotKey) ? dna.dominant_fit : '';
   const color = dna?.primary_colors?.[0] ? hexToBucket(dna.primary_colors[0]) : '';
 
-  // Primary style from DNA, supplemented by the most relevant style tag for this item type
+  // Primary style from DNA → style tags → age-group prior (never fall back to nothing)
   const dnaStyle = dna?.primary_style_category ?? '';
   const tagStyle = styleTags.length
     ? styleTags.slice(0, 2).map(t => t.toLowerCase()).join(' ')
     : '';
-  const styleContext = [dnaStyle, tagStyle].filter(Boolean).join(' ').trim();
+  const styleContext = [dnaStyle, tagStyle].filter(Boolean).join(' ').trim()
+    || ageStyleDefault;
 
   // Occasion words (max 2) for context
   const occ = occasion ? occasion.split(' ').slice(0, 2).join(' ') : '';
@@ -224,6 +225,16 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget) {
   const genderPrefix  = gender === 'men' ? "men's" : gender === 'nonbinary' ? 'unisex' : "women's";
   const styleTags     = userProfile.styleTags ?? [];
   const opennessTiers = userProfile.storeOpennessTiers ?? [];
+  const ageStyleMap   = {
+    under_18: 'streetwear grunge y2k',
+    '18_24':  'streetwear vintage normcore',
+    '25_34':  'smart casual minimal streetwear',
+    '35_44':  'smart casual minimal classic',
+    '45_54':  'smart casual classic minimal',
+    '55_plus':'classic minimal quiet luxury',
+  };
+  const ageStyleDefault = (styleTags.slice(0,2).map(t => t.toLowerCase()).join(' '))
+    || ageStyleMap[userProfile.ageRange] || 'smart casual';
   const wantsBoutique = opennessTiers.includes('mixed') || opennessTiers.includes('open');
   const wantsThrift   = opennessTiers.includes('mixed') || opennessTiers.includes('open');
   const dislikedNames = (dna?.explicit_dislikes?.product_names ?? [])
@@ -248,7 +259,7 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget) {
     const count = groupSlots.length;
 
     try {
-      const mainQuery = buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags);
+      const mainQuery = buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags, ageStyleDefault);
       console.log(`[slot-group] "${slot.label}" x${count} | query: "${mainQuery}"`);
 
       // Always run main query. For N>1, add a second query variation for retailer diversity.
@@ -460,7 +471,7 @@ Age-informed style baseline (supplement when DNA is sparse — actual DNA and st
 }
 
 // ── System prompt ──────────────────────────────────────────────────
-function buildSystemPrompt(userProfile, recentConversations = []) {
+function buildSystemPrompt(userProfile, recentConversations = [], priorUserTurns = 0) {
   const { styleDna, confidenceLevel, imageCount, wallet,
           favoriteStores, storeOpennessTiers, sizes, styleTags, pinterestBoardUrls, gender, ageRange } = userProfile;
 
@@ -487,6 +498,19 @@ function buildSystemPrompt(userProfile, recentConversations = []) {
 
   // Style tags as comma-separated for use in queries (up to 3 most specific ones)
   const styleTagsForQuery = styleTags?.slice(0, 3).map(t => t.toLowerCase()).join(' ') || null;
+
+  // When DNA style is empty, fall back to age-group priors or tags rather than the generic "minimal"
+  const agePriorObj = {
+    under_18: 'streetwear grunge y2k',
+    '18_24':  'streetwear vintage normcore',
+    '25_34':  'smart casual minimal streetwear',
+    '35_44':  'smart casual minimal classic',
+    '45_54':  'smart casual classic minimal',
+    '55_plus':'classic minimal quiet luxury',
+  };
+  const styleDefault = styleTagsForQuery
+    ?? agePriorObj[ageRange]
+    ?? 'smart casual';
 
   const agePrior = getAgePrior(ageRange);
 
@@ -612,7 +636,7 @@ Query formula — ALWAYS in this order:
 
   Fit:     "${dna.dominant_fit ?? 'relaxed'}"
   Colors:  "${primaryColorNames.slice(0,2).join(' ') || 'neutral'}"
-  Style:   "${dna.primary_style_category ?? (styleTagsForQuery ?? 'minimal')}"
+  Style:   "${dna.primary_style_category ?? styleDefault}"
 
   Style tags set by user (USE ALL OF THESE in queries, not just the first):
   ${styleTags?.length ? styleTags.map(t => `"${t}"`).join(', ') : 'none — infer from DNA'}
@@ -631,7 +655,7 @@ Profile is still building — style tags are your primary signal:
   Tags: ${styleTags?.join(', ') || 'none set'}
   Use ALL tags together to craft queries. Pick the 1-2 most item-relevant tags per search.
   Query formula: ${genderPrefix} [fit] [style tags] [item] [occasion]
-  e.g. "${genderPrefix} relaxed ${styleTags?.slice(0,2).map(t => t.toLowerCase()).join(' ') ?? 'minimal'} trousers casual"
+  e.g. "${genderPrefix} relaxed ${styleTags?.slice(0,2).map(t => t.toLowerCase()).join(' ') ?? styleDefault} trousers casual"
 `}
 Cross-reference with wardrobe before building outfits — don't suggest items they likely already own based on their existing style.
 Prioritize aspiration gap items — these are things they want but don't have yet.
@@ -722,7 +746,22 @@ When your clarifying question has 2–4 bounded options (activity type, occasion
 The UI renders these as tap-able buttons — do not list the options again in your text.
 Good use: "What kind of activities are you packing for?\n[CHOICES: Beach + casual | City exploring | Dinners out | Mix of all]"
 Good use: "Is this more of a work thing or going-out thing?\n[CHOICES: Work / office | Going out | Both]"
-Bad use: budget questions, item count, anything needing a typed answer — no [CHOICES] for those.`;
+Bad use: budget questions, item count, anything needing a typed answer — no [CHOICES] for those.
+
+━━━ FULL-OUTFIT COVERAGE ━━━
+
+When the user makes a trip / occasion / seasonal request WITHOUT naming specific items
+(e.g. "Italy trip", "summer clothes", "weekend fits", "rooftop dinner"), you MUST search
+ALL of these in a SINGLE turn: tops, bottoms, shoes. That's 3 separate search_products
+calls in one turn. Do not search only one category for a full-outfit request.
+${priorUserTurns > 0 ? `
+━━━ ⚠ NO MORE QUESTIONS — SEARCH NOW ━━━
+
+The user has already answered your clarifying question. This is turn ${priorUserTurns + 1}.
+You have enough context. Call search_products immediately.
+DO NOT ask any further questions — not about vibe, not about fit, not about anything.
+Make your best inference from what was said and SEARCH. Asking again is a hard failure.
+` : ''}`;
 }
 
 // ── Choices parser ─────────────────────────────────────────────────
@@ -813,6 +852,38 @@ function applyRequestKeywordFilter(cache, keywords) {
   return filtered;
 }
 
+// ── Image enrichment ──────────────────────────────────────────────
+// Uses the stored serpapi_product_link to fetch the full image gallery
+// from SerpAPI's google_product engine. Runs server-side so the frontend
+// receives complete image arrays without any extra client API calls.
+async function enrichProductImages(outfits) {
+  if (!outfits?.length) return;
+  const items = outfits.flatMap(o => o.items ?? []);
+  const toEnrich = items.filter(i => {
+    const p = i.product;
+    return p?.serpapi_product_link && (p?.all_images?.length ?? 0) <= 1;
+  });
+  if (!toEnrich.length) return;
+
+  await Promise.allSettled(toEnrich.map(async item => {
+    const p = item.product;
+    try {
+      const url = new URL(p.serpapi_product_link);
+      url.searchParams.set('api_key', process.env.SHOPPING_API_KEY);
+      const res  = await fetch(url.toString(), { signal: AbortSignal.timeout(5000) });
+      const data = await res.json();
+      const imgs = (data.product_results?.media ?? [])
+        .filter(m => m.type === 'image' && m.link)
+        .map(m => m.link);
+      if (imgs.length > 0) {
+        p.all_images = [...new Set([p.image_url, ...imgs].filter(Boolean))];
+      }
+    } catch {
+      // silently skip — frontend falls back to the thumbnail already in all_images
+    }
+  }));
+}
+
 // ── Main handler (Vercel serverless function) ──────────────────────
 export const config = { maxDuration: 300 };
 
@@ -832,6 +903,10 @@ async function runAgent(message, conversationHistory, userId, recentConversation
   let hasSearchResults = false;
   const MAX_TURNS      = 4;
   let turns            = 0;
+
+  // How many user messages have already been exchanged — used to enforce
+  // "no more questions after first answer" in both slot engine and agent loop.
+  const priorUserTurns = conversationHistory.filter(m => m.role === 'user').length;
 
   // Build text corpus from USER messages only — assistant text contains product names
   // that would pollute category detection and item counts.
@@ -882,7 +957,6 @@ async function runAgent(message, conversationHistory, userId, recentConversation
     // On the first message, if there's no occasion or vibe context,
     // ask ONE targeted question before searching so results are focused.
     // Skip if the user has already answered (conversationHistory has user messages).
-    const priorUserTurns = conversationHistory.filter(m => m.role === 'user').length;
     const hasVibeContext = occasion !== null ||
       /\b(casual|formal|edgy|minimal|vintage|streetwear|grunge|chill|clean|classic|preppy|coastal|retro|vibe|aesthetic|look|feel|style|inspired|inspo|mood|trip|travel|event|night|day|summer|winter|spring|fall)\b/i.test(message);
 
@@ -912,6 +986,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
 
     if (filled.length > 0) {
       lastOutfits       = buildShoppingBoard(requiredSlots, slotCache);
+      await enrichProductImages(lastOutfits);
       hasSearchResults  = true;
 
       // Summarise results for the agent to write an accurate text reply
@@ -1063,7 +1138,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
   let response = await client.messages.create({
     model:       LOOP_MODEL,
     max_tokens:  LOOP_TOKENS,
-    system:      buildSystemPrompt(userProfile, recentConversations),
+    system:      buildSystemPrompt(userProfile, recentConversations, priorUserTurns),
     tools:       TOOLS,
     tool_choice: { type: 'auto' },
     messages,
@@ -1147,6 +1222,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
           userRequest:        message,
           subtypeRequirements,
         });
+        await enrichProductImages(lastOutfits);
         // Tell the agent the ACTUAL products in the outfit so it writes an accurate reply.
         // Agent must describe what's really in the cards — not what it intended to find.
         const outfitSummary = lastOutfits[0]?.items
@@ -1170,7 +1246,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
     response = await client.messages.create({
       model:       LOOP_MODEL,
       max_tokens:  LOOP_TOKENS,
-      system:      buildSystemPrompt(userProfile, recentConversations),
+      system:      buildSystemPrompt(userProfile, recentConversations, priorUserTurns),
       tools:       TOOLS,
       tool_choice: { type: 'auto' },
       messages,
@@ -1193,6 +1269,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
         userRequest:        message,
         subtypeRequirements,
       });
+      await enrichProductImages(lastOutfits);
     } catch (err) {
       console.error('[agent] fallback build_outfits failed:', err.message);
     }
@@ -1215,7 +1292,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
     const recovery = await client.messages.create({
       model:      LOOP_MODEL,
       max_tokens: 512,
-      system:     buildSystemPrompt(userProfile, recentConversations),
+      system:     buildSystemPrompt(userProfile, recentConversations, priorUserTurns),
       messages,
     });
     const rawRecovery = recovery.content.find(b => b.type === 'text')?.text

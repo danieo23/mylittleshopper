@@ -174,16 +174,11 @@ function ProductCard({ item, onReroll, onLike, onDislike, swapping }) {
   );
 }
 
-// ─── Outfit carousel ────────────────────────────────────────────────
+// ─── Single outfit row ───────────────────────────────────────────────
 
-function OutfitCarousel({ outfits, userId, history }) {
-  // Show only the first outfit; items are mutable via silent swaps
-  const [items,    setItems]    = useState(() => outfits?.[0]?.items ?? []);
+function OutfitRow({ outfit, outfitIdx, userId, history }) {
+  const [items,    setItems]    = useState(() => outfit?.items ?? []);
   const [swapping, setSwapping] = useState(new Set());
-  const scrollRef = useRef(null);
-
-  if (!outfits?.length) return null;
-  const outfit = outfits[0];
 
   const sendFeedback = (signalType, item) => {
     if (!userId) return;
@@ -245,7 +240,7 @@ function OutfitCarousel({ outfits, userId, history }) {
     ?? items.reduce((s, i) => s + (i.product?.price ?? 0), 0);
 
   return (
-    <div className="mt-3 border border-border bg-card overflow-hidden">
+    <div className={`border border-border bg-card overflow-hidden ${outfitIdx > 0 ? 'mt-3' : ''}`}>
       {/* Outfit header + total */}
       <div className="flex items-start justify-between px-4 pt-4 pb-2">
         <div className="min-w-0 flex-1 pr-4">
@@ -274,13 +269,12 @@ function OutfitCarousel({ outfits, userId, history }) {
 
       {/* Scrollable items */}
       <div
-        ref={scrollRef}
         className="flex gap-3 overflow-x-auto px-4 pb-4 pt-2 snap-x scroll-smooth"
         style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
       >
         {items.map((item, i) => (
           <ProductCard
-            key={`${item.product?.name ?? i}-${i}`}
+            key={`${item.product?.name ?? i}-${outfitIdx}-${i}`}
             item={item}
             swapping={swapping.has(i)}
             onReroll={() => handleReroll(item, i)}
@@ -289,6 +283,25 @@ function OutfitCarousel({ outfits, userId, history }) {
           />
         ))}
       </div>
+    </div>
+  );
+}
+
+// ─── Outfit carousel — renders ALL returned outfits ──────────────────
+
+function OutfitCarousel({ outfits, userId, history }) {
+  if (!outfits?.length) return null;
+  return (
+    <div className="mt-3">
+      {outfits.map((outfit, i) => (
+        <OutfitRow
+          key={i}
+          outfit={outfit}
+          outfitIdx={i}
+          userId={userId}
+          history={history}
+        />
+      ))}
     </div>
   );
 }

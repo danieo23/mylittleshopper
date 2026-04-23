@@ -127,6 +127,9 @@ create table if not exists transactions (
 -- Multi-board Pinterest support (replaces single pinterest_board_url)
 alter table style_profiles add column if not exists pinterest_board_urls text[] default '{}';
 
+-- Owned-outfit Pinterest boards (treated as wardrobe in DNA synthesis)
+alter table style_profiles add column if not exists wardrobe_board_urls text[] default '{}';
+
 -- Pin-level source tracking + shopping results cache
 alter table aspiration_items add column if not exists source_url text;
 alter table aspiration_items add column if not exists shopping_results jsonb;

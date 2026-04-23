@@ -36,14 +36,20 @@ function buildFrequencyMap(items, getter, weightFn = () => 1) {
  * Writes the result to the style_dna table.
  */
 export async function synthesizeStyleDna(userId) {
-  const [{ data: wardrobe }, { data: aspiration }] = await Promise.all([
+  const [{ data: wardrobe }, { data: aspirationRaw }] = await Promise.all([
     supabase.from('wardrobe_items').select('*').eq('user_id', userId),
     supabase.from('aspiration_items').select('*').eq('user_id', userId),
   ]);
 
+  // pinterest_owned boards = outfits the user actually wears → treated as wardrobe
+  // pinterest / other sources = aspiration / inspiration → treated as aspirational
+  const ownedPins   = (aspirationRaw ?? []).filter(i => i.source_type === 'pinterest_owned');
+  const aspiration  = (aspirationRaw ?? []).filter(i => i.source_type !== 'pinterest_owned');
+
   const all = [
-    ...(wardrobe  ?? []).map(i => ({ ...i, _source: 'wardrobe',    _date: i.uploaded_at })),
-    ...(aspiration ?? []).map(i => ({ ...i, _source: 'aspiration', _date: i.analyzed_at })),
+    ...(wardrobe   ?? []).map(i => ({ ...i, _source: 'wardrobe',    _date: i.uploaded_at })),
+    ...ownedPins        .map(i => ({ ...i, _source: 'wardrobe',    _date: i.analyzed_at })),
+    ...aspiration       .map(i => ({ ...i, _source: 'aspiration', _date: i.analyzed_at })),
   ];
 
   if (all.length === 0) return null;
@@ -84,11 +90,15 @@ export async function synthesizeStyleDna(userId) {
   const brandFreq = buildFrequencyMap(all, i => i.brand, wFn);
   const brandAffinities = topN(brandFreq, 10);
 
-  // Aspiration gap: style/color attributes in aspiration but not wardrobe
-  const wardrobeStyles = new Set((wardrobe ?? []).map(i => i.style_category).filter(Boolean));
-  const aspirationStyleFreq = buildFrequencyMap(aspiration ?? [], i => i.style_category);
+  // Aspiration gap: style categories in pure aspiration but absent from owned items
+  // (wardrobe photos + owned Pinterest boards = "what I actually wear")
+  const ownedStyles = new Set([
+    ...(wardrobe   ?? []).map(i => i.style_category),
+    ...ownedPins        .map(i => i.style_category),
+  ].filter(Boolean));
+  const aspirationStyleFreq = buildFrequencyMap(aspiration, i => i.style_category);
   const aspirationGap = Object.entries(aspirationStyleFreq)
-    .filter(([style]) => !wardrobeStyles.has(style))
+    .filter(([style]) => !ownedStyles.has(style))
     .sort((a, b) => b[1] - a[1])
     .map(([style]) => style);
 

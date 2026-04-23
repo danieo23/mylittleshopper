@@ -75,17 +75,24 @@ async function analyzeWardrobe(userId) {
 }
 
 // ── Pinterest analysis ────────────────────────────────────────────
-async function analyzePinterest(userId, boardUrl) {
+// boardType: 'aspiration' (inspo/want) | 'owned' (outfits user actually wears)
+// Owned boards are stored in aspiration_items with source_type 'pinterest_owned'
+// so they contribute to the wardrobe side of Style DNA synthesis, not the aspiration gap.
+async function analyzePinterest(userId, boardUrl, boardType = 'aspiration') {
   const scraped = await scrapePublicImages(boardUrl);
 
   if (!scraped.images?.length) {
     return { error: scraped.error, userMessage: scraped.userMessage, analyzed: 0 };
   }
 
+  const sourceType = boardType === 'owned' ? 'pinterest_owned' : 'pinterest';
+  const analyzeAs  = boardType === 'owned' ? 'wardrobe'     : 'aspiration';
+
+  // Clear old items for this board (both types, in case the user switched)
   await supabase.from('aspiration_items')
     .delete()
     .eq('user_id', userId)
-    .eq('source_type', 'pinterest')
+    .in('source_type', ['pinterest', 'pinterest_owned'])
     .eq('source_url', boardUrl);
 
   let analyzed = 0;
@@ -97,7 +104,7 @@ async function analyzePinterest(userId, boardUrl) {
     let storedUrl   = imageUrl;
 
     try {
-      styleResult = await analyzeImageStyle(imageUrl, 'aspiration');
+      styleResult = await analyzeImageStyle(imageUrl, analyzeAs);
       if (styleResult.skip_reason) return;
     } catch { return; }
 
@@ -110,7 +117,7 @@ async function analyzePinterest(userId, boardUrl) {
 
     await supabase.from('aspiration_items').insert({
       user_id:          userId,
-      source_type:      'pinterest',
+      source_type:      sourceType,
       source_url:       boardUrl,
       image_url:        storedUrl,
       colors:           styleResult.dominant_colors,
@@ -144,7 +151,7 @@ export default async function handler(req, res) {
 
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { userId, type = 'wardrobe', boardUrl } = req.body;
+  const { userId, type = 'wardrobe', boardUrl, boardType = 'aspiration' } = req.body;
   if (!userId) return res.status(400).json({ error: 'userId required' });
 
   try {
@@ -154,7 +161,7 @@ export default async function handler(req, res) {
       result = await analyzeWardrobe(userId);
     } else if (type === 'pinterest') {
       if (!boardUrl) return res.status(400).json({ error: 'boardUrl required for pinterest analysis' });
-      result = await analyzePinterest(userId, boardUrl);
+      result = await analyzePinterest(userId, boardUrl, boardType);
       if (result.error) return res.status(200).json({ success: false, ...result });
     }
 

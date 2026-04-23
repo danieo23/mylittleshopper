@@ -410,6 +410,8 @@ export default function StyleVault() {
   const [boardInput, setBoardInput]     = useState('');
   const [boardError, setBoardError]     = useState('');
   const [analyzingBoard, setAnalyzingBoard] = useState(null); // which board URL is currently analyzing
+  // Which boards are marked "outfits I own" — derived from profile.wardrobe_board_urls
+  const wBoards = new Set(profile?.wardrobe_board_urls ?? []);
 
   // Sizes
   const [editingSizes, setEditingSizes] = useState(false);
@@ -473,15 +475,25 @@ export default function StyleVault() {
 
   const removeBoard = async (url) => {
     const next = boards.filter(b => b !== url);
-    await saveProfile({ pinterest_board_urls: next });
-    // Remove pins that came from this board
+    const nextWardrobe = (profile?.wardrobe_board_urls ?? []).filter(b => b !== url);
+    await saveProfile({ pinterest_board_urls: next, wardrobe_board_urls: nextWardrobe });
+    // Remove pins from this board regardless of type
     const me = await base44.auth.me();
     await supabase.from('aspiration_items').delete()
-      .eq('user_id', me.id).eq('source_type', 'pinterest').eq('source_url', url);
+      .eq('user_id', me.id).in('source_type', ['pinterest', 'pinterest_owned']).eq('source_url', url);
     const { data: fresh } = await supabase.from('aspiration_items').select('*')
       .eq('user_id', me.id).order('analyzed_at', { ascending: false });
     setAspirationItems(fresh ?? []);
     setAnalyzeMsg('');
+  };
+
+  // Toggle a board between "aspiration" and "owned" — re-analyzes it so DNA updates immediately
+  const toggleBoardType = async (url) => {
+    const isOwned    = wBoards.has(url);
+    const current    = profile?.wardrobe_board_urls ?? [];
+    const nextOwned  = isOwned ? current.filter(b => b !== url) : [...current, url];
+    await saveProfile({ wardrobe_board_urls: nextOwned });
+    analyzeBoard(url, isOwned ? 'aspiration' : 'owned');
   };
 
   const removePin = async (pinId) => {
@@ -520,15 +532,17 @@ export default function StyleVault() {
   };
 
   // Analyzes one board — only replaces pins from that specific board URL
-  const analyzeBoard = async (boardUrl) => {
+  const analyzeBoard = async (boardUrl, boardType) => {
     if (!boardUrl || analyzingBoard) return;
+    // Infer type from current wBoards state if not explicitly passed
+    const effectiveType = boardType ?? (wBoards.has(boardUrl) ? 'owned' : 'aspiration');
     setAnalyzingBoard(boardUrl);
-    setAnalyzeMsg('Scraping board and running reverse image search — up to 60 seconds…');
+    setAnalyzeMsg('Scraping board and running style analysis — up to 60 seconds…');
     try {
       const res  = await fetch('/api/analyze', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ userId, type: 'pinterest', boardUrl }),
+        body:    JSON.stringify({ userId, type: 'pinterest', boardUrl, boardType: effectiveType }),
       });
       const data = await res.json();
       if (!data.success) {
@@ -791,27 +805,59 @@ export default function StyleVault() {
       </Section>
 
       {/* Pinterest boards */}
-      <Section title="Pinterest boards" subtitle="Add multiple boards — each is analyzed separately and combined in your Style DNA.">
-        <div className="space-y-2 mb-4">
-          {boards.map(url => (
-            <div key={url} className="flex items-center gap-3">
-              <span className="text-sm text-foreground truncate flex-1 max-w-md px-4 py-2.5 border border-border bg-card">
-                {url}
-              </span>
-              <button
-                onClick={() => analyzeBoard(url)}
-                disabled={!!analyzingBoard}
-                className="inline-flex items-center gap-1.5 px-3 py-2 border border-border text-muted-foreground text-xs uppercase tracking-widest hover:text-foreground hover:border-foreground/40 transition disabled:opacity-40"
-              >
-                {analyzingBoard === url ? <Loader2 className="w-3 h-3 animate-spin" /> : <ArrowRight className="w-3 h-3" />}
-                {analyzingBoard === url ? 'Analyzing…' : 'Re-analyze'}
-              </button>
-              <button onClick={() => removeBoard(url)}
-                className="p-2 text-muted-foreground hover:text-destructive transition" title="Remove board">
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          ))}
+      <Section title="Pinterest boards" subtitle="Add boards — mark each as Aspiration (style inspo) or Own it (outfits you actually wear). Lychee treats them differently in your Style DNA.">
+        <div className="space-y-3 mb-4">
+          {boards.map(url => {
+            const isOwned = wBoards.has(url);
+            return (
+              <div key={url} className="flex flex-col gap-2 p-3 border border-border bg-card">
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-muted-foreground truncate flex-1 min-w-0">{url}</span>
+                  <button
+                    onClick={() => analyzeBoard(url)}
+                    disabled={!!analyzingBoard}
+                    className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 border border-border text-muted-foreground text-[10px] uppercase tracking-widest hover:text-foreground hover:border-foreground/40 transition disabled:opacity-40"
+                  >
+                    {analyzingBoard === url ? <Loader2 className="w-3 h-3 animate-spin" /> : <ArrowRight className="w-3 h-3" />}
+                    {analyzingBoard === url ? 'Analyzing…' : 'Re-analyze'}
+                  </button>
+                  <button onClick={() => removeBoard(url)}
+                    className="shrink-0 p-1.5 text-muted-foreground hover:text-destructive transition" title="Remove board">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                {/* Board type toggle */}
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px] text-muted-foreground uppercase tracking-wider mr-2">This board is:</span>
+                  <button
+                    onClick={() => !isOwned && toggleBoardType(url)}
+                    disabled={!!analyzingBoard}
+                    className={`px-3 py-1 text-[10px] uppercase tracking-wider border transition disabled:opacity-40 ${
+                      !isOwned
+                        ? 'border-primary text-primary bg-primary/10'
+                        : 'border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground'
+                    }`}
+                  >
+                    Aspiration
+                  </button>
+                  <button
+                    onClick={() => isOwned && toggleBoardType(url)}
+                    disabled={!!analyzingBoard}
+                    className={`px-3 py-1 text-[10px] uppercase tracking-wider border transition disabled:opacity-40 ${
+                      isOwned
+                        ? 'border-primary text-primary bg-primary/10'
+                        : 'border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground'
+                    }`}
+                  >
+                    Own it
+                  </button>
+                  {isOwned && (
+                    <span className="text-[10px] text-muted-foreground ml-2">— counted as your wardrobe</span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
 
         {addingBoard ? (
