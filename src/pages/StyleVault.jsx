@@ -406,10 +406,11 @@ export default function StyleVault() {
   const [wardrobeAnalyzeMsg, setWardrobeAnalyzeMsg] = useState('');
 
   // Pinterest boards (multiple)
-  const [addingBoard, setAddingBoard]   = useState(false);
-  const [boardInput, setBoardInput]     = useState('');
-  const [boardError, setBoardError]     = useState('');
-  const [analyzingBoard, setAnalyzingBoard] = useState(null); // which board URL is currently analyzing
+  const [addingBoard, setAddingBoard]     = useState(false);
+  const [boardInput, setBoardInput]       = useState('');
+  const [newBoardType, setNewBoardType]   = useState('aspiration'); // chosen before adding
+  const [boardError, setBoardError]       = useState('');
+  const [analyzingBoard, setAnalyzingBoard] = useState(null);
   // Which boards are marked "outfits I own" — derived from profile.wardrobe_board_urls
   const wBoards = new Set(profile?.wardrobe_board_urls ?? []);
 
@@ -459,14 +460,18 @@ export default function StyleVault() {
     if (!url) return;
     setBoardError('');
     try {
-      const next = [...new Set([...boards, url])];
-      await saveProfile({ pinterest_board_urls: next });
+      const nextBoards  = [...new Set([...boards, url])];
+      const nextOwned   = newBoardType === 'owned'
+        ? [...new Set([...(profile?.wardrobe_board_urls ?? []), url])]
+        : (profile?.wardrobe_board_urls ?? []);
+      await saveProfile({ pinterest_board_urls: nextBoards, wardrobe_board_urls: nextOwned });
       setBoardInput('');
+      setNewBoardType('aspiration');
       setAddingBoard(false);
       if (analyzingBoard) {
         setAnalyzeMsg('Board saved — click Re-analyze once the current analysis finishes.');
       } else {
-        analyzeBoard(url);
+        analyzeBoard(url, newBoardType);
       }
     } catch (err) {
       setBoardError(`Could not save board: ${err.message}`);
@@ -861,7 +866,8 @@ export default function StyleVault() {
         </div>
 
         {addingBoard ? (
-          <div className="flex items-center gap-2 max-w-lg">
+          <div className="border border-border bg-card p-4 max-w-lg space-y-3">
+            {/* URL input */}
             <input
               autoFocus
               type="url"
@@ -869,14 +875,45 @@ export default function StyleVault() {
               onChange={e => setBoardInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') addBoard(); }}
               placeholder="https://pinterest.com/yourname/boardname"
-              className="flex-1 bg-card border border-border px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-foreground/40"
+              className="w-full bg-transparent border border-border px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-foreground/40"
             />
-            <button onClick={addBoard} className="p-2 border border-primary text-primary hover:bg-primary hover:text-primary-foreground transition">
-              <Check className="w-4 h-4" />
-            </button>
-            <button onClick={() => setAddingBoard(false)} className="p-2 border border-border text-muted-foreground hover:text-foreground transition">
-              <X className="w-4 h-4" />
-            </button>
+            {/* Type picker */}
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-muted-foreground uppercase tracking-wider">This board is:</span>
+              <button
+                onClick={() => setNewBoardType('aspiration')}
+                className={`px-3 py-1 text-[10px] uppercase tracking-wider border transition ${
+                  newBoardType === 'aspiration'
+                    ? 'border-primary text-primary bg-primary/10'
+                    : 'border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground'
+                }`}
+              >
+                Aspiration
+              </button>
+              <button
+                onClick={() => setNewBoardType('owned')}
+                className={`px-3 py-1 text-[10px] uppercase tracking-wider border transition ${
+                  newBoardType === 'owned'
+                    ? 'border-primary text-primary bg-primary/10'
+                    : 'border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground'
+                }`}
+              >
+                Own it
+              </button>
+              <span className="text-[10px] text-muted-foreground">
+                {newBoardType === 'owned' ? '— adds to your wardrobe' : '— style inspiration'}
+              </span>
+            </div>
+            {/* Confirm / cancel */}
+            <div className="flex gap-2">
+              <button onClick={addBoard} className="inline-flex items-center gap-1.5 px-4 py-2 border border-primary text-primary text-xs uppercase tracking-wider hover:bg-primary hover:text-primary-foreground transition">
+                <Check className="w-3.5 h-3.5" /> Add board
+              </button>
+              <button onClick={() => { setAddingBoard(false); setBoardInput(''); setNewBoardType('aspiration'); }}
+                className="px-4 py-2 border border-border text-muted-foreground text-xs uppercase tracking-wider hover:text-foreground transition">
+                Cancel
+              </button>
+            </div>
           </div>
         ) : (
           <button onClick={() => setAddingBoard(true)}
@@ -896,11 +933,12 @@ export default function StyleVault() {
         )}
       </Section>
 
-      {/* Shoppable Pinterest pins */}
-      {aspirationItems.length > 0 && (
+      {/* Shoppable Pinterest pins — aspiration only, not owned boards */}
+      {aspirationItems.some(p => p.source_type !== 'pinterest_owned') && (
         <Section title="Shoppable pins" subtitle="Tap 'Shop this look' on any pin to browse products Google Lens found — sorted by item.">
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
             {aspirationItems
+              .filter(pin => pin.source_type !== 'pinterest_owned')
               .filter((pin, i, arr) => arr.findIndex(p => p.image_url === pin.image_url) === i)
               .map(pin => (
                 <ShoppablePinCard
