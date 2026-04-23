@@ -307,8 +307,24 @@ FIT CLARIFICATION EXCEPTION — ask when fit spectrum matters:
   Good: "What kind of fit for the trousers?
   [CHOICES: Tapered slim | Straight relaxed | Wide-leg]"
 
+  ALREADY ANSWERED — check conversation history FIRST. If any prior message already answers
+  the fit question (contains words like: medium, regular, not too, a bit, slightly, kinda,
+  moderate, semi, or any numeric like "32", "34"), DO NOT ask again. Treat it as answered and
+  proceed directly to search. Asking the same fit question twice is a hard failure.
+
   Skip this question if the user already specified: "slim", "straight", "skinny", "tapered",
   "wide-leg", "barrel", "flare", "bootcut", "skater", or a specific numeric measurement.
+
+TEE/TOP CLARIFICATION — ask when the user explicitly invites questions:
+  When the user says "ask me clarifying questions" (or similar) AND they requested graphic tees,
+  you may ask ONE question about tee style — but COMBINE it with the fit question into a single
+  message, not two separate messages. Never ask more than one message worth of questions total.
+
+  Good combined: "Two quick things — how baggy for the jeans, and what kind of graphic tees?
+  Fit: [CHOICES: Slightly relaxed | Medium baggy | Very wide/skater]
+  Tees: [CHOICES: Band / music tees | Vintage washed graphic | Oversized boxy print | Athletic graphic]"
+
+  If the user did NOT invite clarifying questions, skip the tee question entirely — infer from DNA.
 
 ━━━ PROFILE-DRIVEN SEARCH — use the DNA in every query ━━━
 
@@ -622,10 +638,23 @@ async function runAgent(message, conversationHistory, userId, recentConversation
     }
   }
 
-  // Parse explicit item-subtype keywords from THIS message only (not history).
-  // Used to filter productCache before buildOutfits so the right item type always wins.
-  // e.g. user says "button-down shirts" → hoodies are dropped from tops before outfit assembly.
-  const msgLower = message.toLowerCase();
+  // Parse item-subtype keywords from the FULL recent user context — not just the current message.
+  // Critical: when user is answering a clarifying question ("medium baggy"), the original
+  // item request ("cargo jeans, baggy jeans, graphic tees") is in conversation history.
+  // Without this, all subtype filtering and counts reset to zero on follow-up turns.
+  const recentUserMessages = [message];
+  let _uCount = 0;
+  for (const m of [...conversationHistory].reverse()) {
+    if (_uCount >= 4) break;
+    const role = m.role;
+    if (role === 'user') {
+      const text = typeof m.content === 'string' ? m.content
+        : (m.content ?? []).filter(b => b.type === 'text').map(b => b.text).join(' ');
+      recentUserMessages.push(text);
+      _uCount++;
+    }
+  }
+  const msgLower = recentUserMessages.join(' ').toLowerCase();
   const requestKeywords = {};
   // Tops subtypes
   if (/button.?down|dress shirt|oxford shirt|poplin|linen shirt|woven shirt|chambray/i.test(msgLower)) {
@@ -718,9 +747,15 @@ async function runAgent(message, conversationHistory, userId, recentConversation
           if (block.name === 'search_products' && Array.isArray(result) && result.length > 0) {
             hasSearchResults = true;
             const cat = block.input.category;
+            // Strip products the user has explicitly disliked — exact name match (normalized).
+            const dislikedNames = (userProfile.styleDna?.explicit_dislikes?.product_names ?? [])
+              .map(n => n.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 50));
+            const dedisliked = result.filter(p => {
+              const key = (p.name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 50);
+              return !dislikedNames.includes(key);
+            });
             // Tag explicit search results so they rank above inspo products in the cache.
-            // User asked for these directly — they should always beat passively-cached inspo items.
-            const tagged = result.map(p => ({ ...p, _from_explicit_search: true, score: (p.score ?? 50) + 20, _score: (p._score ?? 50) + 20 }));
+            const tagged = dedisliked.map(p => ({ ...p, _from_explicit_search: true, score: (p.score ?? 50) + 20, _score: (p._score ?? 50) + 20 }));
             const merged = [...tagged, ...(productCache[cat] ?? [])];
             productCache[cat] = merged
               .filter((p, i, arr) =>

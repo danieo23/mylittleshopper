@@ -64,6 +64,13 @@ export async function updateStyleDna(userId, signalType, itemAttributes, swapTar
         updates.brand_rejections = [...rejections, itemAttributes.brand].slice(0, 20);
       }
     }
+
+    // Track rejected product names so the exact item never resurfaces
+    if (itemAttributes.name) {
+      const dislikedNames = [...(dislikes.product_names ?? []), itemAttributes.name];
+      dislikes.product_names = [...new Set(dislikedNames)].slice(0, 100);
+      updates.explicit_dislikes = dislikes;
+    }
   }
 
   if (signalType === 'approval' || signalType === 'post_delivery_positive') {
