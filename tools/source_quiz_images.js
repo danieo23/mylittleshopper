@@ -212,7 +212,8 @@ async function main() {
         const s = scores[id];
         console.log(`${String(s.label_score).padEnd(7)} ${String(s.presentation_score).padEnd(6)} ✓ verified`);
       } else {
-        results[id] = null;
+        // Preserve existing URL rather than overwriting with null on failure
+        if (!results[id]) results[id] = null;
         const reason = lastScore
           ? `label=${lastScore.label_score} pres=${lastScore.presentation_score} rejects=[${lastScore.hard_rejects.join(',')}]`
           : 'scoring failed';
@@ -223,10 +224,11 @@ async function main() {
     } catch (err) {
       console.log(`ERROR: ${err.message.slice(0, 50)}`);
       failures.push({ id, reason: err.message });
-      results[id] = null;
+      // Preserve existing URL on network/fetch errors — don't overwrite good URLs with null
+      if (!results[id]) results[id] = null;
     }
 
-    await new Promise(r => setTimeout(r, 600));
+    await new Promise(r => setTimeout(r, 2500));
   }
 
   const outPath = join(__dir, '..', 'quiz-image-results.json');

@@ -1,0 +1,35 @@
+[
+  {
+    "id": "crop_top",
+    "category": "Tops",
+    "label": "Crop Top",
+    "url": null,
+    "label_score": 0,
+    "presentation_score": 0,
+    "hard_rejects": ["MANUAL_OVERRIDE"],
+    "can_fix_with_crop": false,
+    "passes": false
+  },
+  {
+    "id": "chunky_cardigan",
+    "category": "Outerwear",
+    "label": "Chunky Cardigan",
+    "url": null,
+    "label_score": 0,
+    "presentation_score": 0,
+    "hard_rejects": ["MANUAL_OVERRIDE"],
+    "can_fix_with_crop": false,
+    "passes": false
+  },
+  {
+    "id": "sunglasses",
+    "category": "Accessories",
+    "label": "Sunglasses",
+    "url": null,
+    "label_score": 0,
+    "presentation_score": 0,
+    "hard_rejects": ["MANUAL_OVERRIDE"],
+    "can_fix_with_crop": false,
+    "passes": false
+  }
+]
