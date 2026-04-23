@@ -76,6 +76,196 @@ const TOOLS = [
   },
 ];
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SLOT-BASED SHOPPING ENGINE
+// Converts explicit item requests into typed slots, searches each
+// slot independently, validates fulfillment, and builds the product
+// card deterministically — no LLM assembly for specific requests.
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+const SLOT_DEFS = {
+  // Tops
+  graphic_tee:    { category: 'tops',      label: 'graphic tee',       keywords: ['graphic', 'print', 'tee', 't-shirt'],                  modifiers: 'graphic tee streetwear' },
+  band_tee:       { category: 'tops',      label: 'band tee',          keywords: ['band', 'music', 'tee', 'graphic'],                     modifiers: 'band tee vintage music' },
+  button_down:    { category: 'tops',      label: 'button-down shirt', keywords: ['button', 'shirt', 'oxford', 'poplin', 'woven', 'chambray', 'linen'], modifiers: 'button-down shirt' },
+  polo:           { category: 'tops',      label: 'polo shirt',        keywords: ['polo'],                                                modifiers: 'polo shirt' },
+  tank_top:       { category: 'tops',      label: 'tank top',          keywords: ['tank', 'cami', 'sleeveless'],                          modifiers: 'tank top cami' },
+  linen_shirt:    { category: 'tops',      label: 'linen shirt',       keywords: ['linen'],                                               modifiers: 'linen shirt' },
+  oversized_tee:  { category: 'tops',      label: 'oversized tee',     keywords: ['oversized', 'boxy', 'tee', 't-shirt'],                 modifiers: 'oversized boxy tee' },
+  generic_top:    { category: 'tops',      label: 'top',               keywords: [],                                                      modifiers: 'top shirt' },
+  // Bottoms
+  cargo_pants:    { category: 'bottoms',   label: 'cargo pants',       keywords: ['cargo'],                                               modifiers: 'cargo pants' },
+  baggy_jeans:    { category: 'bottoms',   label: 'baggy jeans',       keywords: ['baggy', 'wide', 'loose', 'barrel', 'relaxed'],         modifiers: 'baggy wide leg jeans relaxed' },
+  straight_jeans: { category: 'bottoms',   label: 'straight jeans',    keywords: ['straight', 'regular', 'classic', 'jean'],              modifiers: 'straight leg jeans' },
+  slim_jeans:     { category: 'bottoms',   label: 'slim jeans',        keywords: ['slim', 'skinny', 'tapered'],                           modifiers: 'slim fit jeans' },
+  chinos:         { category: 'bottoms',   label: 'chinos',            keywords: ['chino', 'khaki', 'twill'],                             modifiers: 'chino pants' },
+  shorts:         { category: 'bottoms',   label: 'shorts',            keywords: ['short'],                                               modifiers: 'shorts' },
+  trousers:       { category: 'bottoms',   label: 'trousers',          keywords: ['trouser', 'slacks'],                                   modifiers: 'dress trousers' },
+  sweatpants:     { category: 'bottoms',   label: 'sweatpants',        keywords: ['sweat', 'jogger', 'track'],                            modifiers: 'sweatpants joggers' },
+  generic_bottom: { category: 'bottoms',   label: 'jeans',             keywords: ['jean', 'denim'],                                       modifiers: 'jeans denim' },
+  // Shoes
+  sneakers:       { category: 'shoes',     label: 'sneakers',          keywords: ['sneaker', 'trainer', 'runner', 'shoe'],                modifiers: 'sneakers' },
+  boots:          { category: 'shoes',     label: 'boots',             keywords: ['boot'],                                                modifiers: 'boots' },
+  sandals:        { category: 'shoes',     label: 'sandals',           keywords: ['sandal', 'slide', 'flip'],                             modifiers: 'sandals' },
+  loafers:        { category: 'shoes',     label: 'loafers',           keywords: ['loafer', 'mule'],                                      modifiers: 'loafers' },
+  // Outerwear
+  flannel:        { category: 'outerwear', label: 'flannel',           keywords: ['flannel', 'plaid'],                                    modifiers: 'flannel shirt' },
+  hoodie:         { category: 'outerwear', label: 'hoodie',            keywords: ['hoodie', 'sweatshirt', 'pullover'],                    modifiers: 'hoodie sweatshirt' },
+  jacket:         { category: 'outerwear', label: 'jacket',            keywords: ['jacket', 'coat', 'blazer'],                            modifiers: 'jacket' },
+  cardigan:       { category: 'outerwear', label: 'cardigan',          keywords: ['cardigan', 'knit'],                                    modifiers: 'cardigan' },
+};
+
+/**
+ * Parse a user text string into required slots.
+ * Returns [] for vague/open requests — only populates when user names specific items.
+ */
+function parseRequestSlots(text) {
+  const t = text.toLowerCase();
+  const slots = [];
+  let idx = 0;
+
+  const W2N = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6 };
+  function countFor(itemRe) {
+    const m = t.match(new RegExp(`(\\d+|one|two|three|four|five|six)\\s+${itemRe}`, 'i'));
+    if (!m) return 1;
+    return parseInt(m[1]) || W2N[m[1]] || 1;
+  }
+  function add(key, n = 1) {
+    for (let i = 0; i < n; i++) slots.push({ ...SLOT_DEFS[key], id: `${SLOT_DEFS[key].category}_${idx++}` });
+  }
+
+  // ── Tops (order matters: most specific first) ──
+  if (/graphic tee|graphic t.?shirt|band tee|printed tee/i.test(t)) add('graphic_tee', countFor('(?:graphic\\s+)?tees?'));
+  if (/button.?down|dress shirt|oxford shirt|poplin|woven shirt|chambray/i.test(t)) add('button_down', countFor('(?:button.?down|dress shirt|shirts?)'));
+  if (/linen shirt/i.test(t) && !/button.?down/i.test(t)) add('linen_shirt');
+  if (/\bpolo\b/i.test(t)) add('polo', countFor('polos?'));
+  if (/\btank top\b|\bcami\b/i.test(t)) add('tank_top');
+  if (/oversized tee|boxy tee/i.test(t) && !/graphic/i.test(t)) add('oversized_tee', countFor('(?:oversized|boxy)\\s+tees?'));
+  // Generic top only if no specific top detected AND user mentioned tops/shirts
+  if (!slots.some(s => s.category === 'tops') && /\btop(s)?\b|\bshirt(s)?\b|\btee(s)?\b/i.test(t)) {
+    add('generic_top', countFor('(?:tops?|shirts?|tees?)'));
+  }
+
+  // ── Bottoms (most specific first) ──
+  if (/\bcargo\b/i.test(t)) add('cargo_pants', countFor('cargo'));
+  if (/baggy\s*jeans?|wide.?leg\s*jeans?|loose\s*jeans?/i.test(t)) add('baggy_jeans', countFor('(?:baggy|wide.?leg|loose)\\s*jeans?'));
+  if (/straight\s*jeans?|regular\s*jeans?/i.test(t)) add('straight_jeans', countFor('straight\\s*jeans?'));
+  if (/slim\s*jeans?|skinny\s*jeans?/i.test(t)) add('slim_jeans', countFor('(?:slim|skinny)\\s*jeans?'));
+  if (/\bchinos?\b/i.test(t)) add('chinos', countFor('chinos?'));
+  if (/\bshorts?\b/i.test(t)) add('shorts', countFor('shorts?'));
+  if (/\btrousers?\b/i.test(t)) add('trousers', countFor('trousers?'));
+  if (/\bsweatpants?\b|\bjoggers?\b/i.test(t)) add('sweatpants', countFor('(?:sweatpants?|joggers?)'));
+  // Generic jeans only if no specific bottom detected
+  if (!slots.some(s => s.category === 'bottoms') && /\bjeans?\b|\bpants?\b|\bbottoms?\b/i.test(t)) {
+    add('generic_bottom', countFor('(?:jeans?|pants?)'));
+  }
+
+  // ── Outerwear ──
+  if (/\bflannel(s)?\b/i.test(t)) add('flannel', countFor('flannels?'));
+  if (/\bhoodie(s)?\b|\bsweatshirt(s)?\b/i.test(t)) add('hoodie', countFor('(?:hoodies?|sweatshirts?)'));
+  if (/\bjacket(s)?\b|\bcoat(s)?\b|\bblazer(s)?\b/i.test(t)) add('jacket', countFor('(?:jackets?|coats?|blazers?)'));
+  if (/\bcardigan(s)?\b/i.test(t)) add('cardigan', countFor('cardigans?'));
+
+  // ── Shoes ──
+  if (/sneakers?|trainers?/i.test(t)) add('sneakers', countFor('(?:sneakers?|trainers?)'));
+  else if (/\bboots?\b/i.test(t)) add('boots', countFor('boots?'));
+  else if (/sandals?/i.test(t)) add('sandals', countFor('sandals?'));
+  else if (/loafers?/i.test(t)) add('loafers', countFor('loafers?'));
+
+  return slots;
+}
+
+/**
+ * Build a style-aware search query for a specific slot.
+ */
+function buildSlotQuery(slot, genderPrefix, dna, occasion) {
+  const fit   = dna?.dominant_fit && !['graphic_tee','band_tee','polo','tank_top','button_down','linen_shirt','oversized_tee','generic_top'].includes(slot.id?.split('_').slice(0,-1).join('_'))
+    ? dna.dominant_fit : '';
+  const color = dna?.primary_colors?.[0] ? hexToBucket(dna.primary_colors[0]) : '';
+  const style = dna?.primary_style_category ?? '';
+  // Occasion words (max 2) for context
+  const occ   = occasion ? occasion.split(' ').slice(0, 2).join(' ') : '';
+
+  return [genderPrefix, fit, color, style, slot.modifiers, occ]
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Execute one search per slot in parallel. Returns { slotId: products[] }.
+ */
+async function fillSlots(requiredSlots, userProfile, occasion, budget) {
+  const dna           = userProfile.styleDna;
+  const gender        = userProfile.profile?.gender;
+  const genderPrefix  = gender === 'male' ? "men's" : gender === 'female' ? "women's" : "unisex";
+  const dislikedNames = (dna?.explicit_dislikes?.product_names ?? [])
+    .map(n => n.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 50));
+
+  const slotCache = {};
+
+  await Promise.all(requiredSlots.map(async slot => {
+    try {
+      const query = buildSlotQuery(slot, genderPrefix, dna, occasion);
+      console.log(`[slot] ${slot.id} | "${slot.label}" | query: "${query}"`);
+
+      const raw    = await searchProducts({ query, category: slot.category, maxPrice: budget });
+      const scored = raw.map(p => ({
+        ...p,
+        _score:   scoreProductMatch(p, dna, occasion).score,
+        _slot_id: slot.id,
+        _subtype: slot.label,
+      }));
+
+      // Keyword filter scoped to this slot's specific item type
+      const kwFiltered = slot.keywords?.length
+        ? scored.filter(p => slot.keywords.some(kw => (p.name ?? '').toLowerCase().includes(kw)))
+        : scored;
+
+      // Fall back to all results if keyword filter is too strict (< 2 matches)
+      const candidates = kwFiltered.length >= 2 ? kwFiltered : scored;
+
+      // Remove explicitly disliked products by name
+      const clean = candidates.filter(p => {
+        const key = (p.name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 50);
+        return !dislikedNames.includes(key);
+      });
+
+      slotCache[slot.id] = clean.sort((a, b) => b._score - a._score).slice(0, 8);
+
+      console.log(`[slot] ${slot.id}: ${raw.length} raw → ${kwFiltered.length} kw-filtered → ${slotCache[slot.id].length} final (fallback: ${kwFiltered.length < 2})`);
+    } catch (err) {
+      console.error(`[slot] ${slot.id} search failed:`, err.message);
+      slotCache[slot.id] = [];
+    }
+  }));
+
+  return slotCache;
+}
+
+/**
+ * Build a deterministic product card from filled slots.
+ * Picks top-scored product from each slot. No LLM needed.
+ */
+function buildShoppingBoard(requiredSlots, slotCache) {
+  const catLabel = { tops: 'top', bottoms: 'bottom', shoes: 'shoes', outerwear: 'outerwear', dress: 'dress', accessories: 'accessory' };
+  const items = requiredSlots.map(slot => {
+    const best = (slotCache[slot.id] ?? [])[0];
+    if (!best) return null;
+    return {
+      category:     catLabel[slot.category] ?? slot.category,
+      product_name: best.name,
+      product:      best,
+      _slot_id:     slot.id,
+      _subtype:     slot.label,
+    };
+  }).filter(Boolean);
+
+  const total = items.reduce((s, i) => s + (i.product?.price ?? 0), 0);
+  return [{ outfit_name: 'Your Shopping Picks', items, total_price: Math.round(total * 100) / 100, style_note: null, wardrobe_multiplier: 1 }];
+}
+
 // ── Hex → readable color name ──────────────────────────────────────
 // Used so search queries contain "navy beige" not "#1a237e #f5f5dc"
 function hexToBucket(hex) {
@@ -567,20 +757,8 @@ async function runAgent(message, conversationHistory, userId, recentConversation
     )
   ].join(' ').toLowerCase();
 
-  // Parse which product categories the user explicitly asked for.
-  // buildOutfits is only triggered once ALL required categories are in the cache —
-  // this prevents assembling outfits before the jeans/shoes/etc. search completes.
-  const requiredCategories = new Set();
-  if (/\btop(s)?\b|\bshirt(s)?\b|\bblouse(s)?\b|\btee(s)?\b|\btank(s)?\b/.test(userText)) requiredCategories.add('tops');
-  if (/\bjean(s)?\b|\bbottom(s)?\b|\bpant(s)?\b|\btrousers?\b|\bskirt(s)?\b|\bcargo\b/.test(userText)) requiredCategories.add('bottoms');
-  if (/\bshoe(s)?\b|\bsneaker(s)?\b|\bboot(s)?\b|\bsandal(s)?\b|\bheel(s)?\b/.test(userText)) requiredCategories.add('shoes');
-  if (/\bflannel(s)?\b|\bjacket(s)?\b|\bcoat(s)?\b|\bouterwear\b|\bblazer(s)?\b|\bcardigan(s)?\b|\bhoodie(s)?\b/.test(userText)) requiredCategories.add('outerwear');
-  if (/\bdress(es)?\b/.test(userText)) requiredCategories.add('dress');
-  if (/\baccessor|\bbag(s)?\b|\bhat(s)?\b|\bscarf|\bjewelr/.test(userText)) requiredCategories.add('accessories');
-
-  // Build a rich occasion string from all relevant context keywords — used for
-  // both buildOutfits naming AND season/occasion scoring in scoreProductMatch.
-  const occasionPatterns = [
+  // Build occasion string early — needed by both slot engine and agent loop
+  const occasionPatternsEarly = [
     [/\bsummer\b/,                             'summer'],
     [/\bwinter\b/,                             'winter'],
     [/\bfall\b|\bautumn\b/,                    'fall'],
@@ -601,11 +779,58 @@ async function runAgent(message, conversationHistory, userId, recentConversation
     [/\bcalifornia\b|\bla\b|\bla beach\b/,     'california summer'],
     [/\bbrunch\b/,                             'brunch casual'],
   ];
-  const occasionWords = new Set();
-  for (const [re, label] of occasionPatterns) {
-    if (re.test(userText)) label.split(' ').forEach(w => occasionWords.add(w));
+  const occasionWordsEarly = new Set();
+  for (const [re, label] of occasionPatternsEarly) {
+    if (re.test(userText)) label.split(' ').forEach(w => occasionWordsEarly.add(w));
   }
-  const occasion = occasionWords.size ? [...occasionWords].join(' ') : null;
+  const occasion = occasionWordsEarly.size ? [...occasionWordsEarly].join(' ') : null;
+
+  // ── SLOT ENGINE: deterministic per-item search ────────────────────
+  // Parse user's request into typed slots and fill each one with a
+  // targeted search. This is the primary path for specific-item requests.
+  // Vague requests (no named items) fall through to the agent loop.
+  const requiredSlots = parseRequestSlots(userText);
+  console.log(`[slots] parsed ${requiredSlots.length} slots:`, requiredSlots.map(s => `${s.id}(${s.label})`).join(', ') || 'none (vague request)');
+
+  if (requiredSlots.length > 0) {
+    const budget      = userProfile.wallet?.balance ?? 500;
+    const slotCache   = await fillSlots(requiredSlots, userProfile, occasion, budget);
+    const filled      = requiredSlots.filter(s => (slotCache[s.id]?.length ?? 0) > 0);
+    const unfilled    = requiredSlots.filter(s => !(slotCache[s.id]?.length ?? 0));
+
+    console.log(`[slots] filled=${filled.length}/${requiredSlots.length}` +
+      (unfilled.length ? ` unfilled=[${unfilled.map(s => s.label).join(', ')}]` : ''));
+
+    if (filled.length > 0) {
+      lastOutfits       = buildShoppingBoard(requiredSlots, slotCache);
+      hasSearchResults  = true;
+
+      // Summarise results for the agent to write an accurate text reply
+      const found  = filled.map(s  => `${s.label}: "${slotCache[s.id][0].name}" ($${slotCache[s.id][0].price})`).join(', ');
+      const missed = unfilled.map(s => s.label).join(', ');
+
+      const ctxMsg = `[Search complete. Found: ${found}.${missed ? ` Could not find: ${missed}.` : ''} Product cards are shown in the UI. Reply in 1-2 sentences. Plain text, no markdown.]`;
+      const replyResp = await client.messages.create({
+        model:      LOOP_MODEL,
+        max_tokens: 256,
+        system:     buildSystemPrompt(userProfile, recentConversations),
+        messages:   [...conversationHistory, { role: 'user', content: message }, { role: 'user', content: ctxMsg }],
+      });
+      const { reply, choices } = parseChoices(replyResp.content.find(b => b.type === 'text')?.text ?? '');
+      return { reply, history: messages, outfits: lastOutfits, choices };
+    }
+    // All slots empty (all searches failed) — fall through to agent loop
+    console.warn('[slots] all slots empty — falling back to agent loop');
+  }
+
+  // ── CATEGORY GATE: for vague requests, wait until all categories are cached ──
+  const requiredCategories = new Set();
+  if (/\btop(s)?\b|\bshirt(s)?\b|\bblouse(s)?\b|\btee(s)?\b|\btank(s)?\b/.test(userText)) requiredCategories.add('tops');
+  if (/\bjean(s)?\b|\bbottom(s)?\b|\bpant(s)?\b|\btrousers?\b|\bskirt(s)?\b|\bcargo\b/.test(userText)) requiredCategories.add('bottoms');
+  if (/\bshoe(s)?\b|\bsneaker(s)?\b|\bboot(s)?\b|\bsandal(s)?\b|\bheel(s)?\b/.test(userText)) requiredCategories.add('shoes');
+  if (/\bflannel(s)?\b|\bjacket(s)?\b|\bcoat(s)?\b|\bouterwear\b|\bblazer(s)?\b|\bcardigan(s)?\b|\bhoodie(s)?\b/.test(userText)) requiredCategories.add('outerwear');
+  if (/\bdress(es)?\b/.test(userText)) requiredCategories.add('dress');
+  if (/\baccessor|\bbag(s)?\b|\bhat(s)?\b|\bscarf|\bjewelr/.test(userText)) requiredCategories.add('accessories');
 
   // Parse item counts (from all text including assistant clarifications)
   const fullText = [message, ...conversationHistory.map(m =>
