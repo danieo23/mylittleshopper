@@ -86,8 +86,29 @@ const AGE_RANGE_OPTIONS = [
   { key: '55_plus',  label: '55 +',      desc: 'Quality and comfort first' },
 ];
 
+const STORE_TIERS = [
+  {
+    key:      'mainstream',
+    label:    'Mainstream',
+    sub:      'Well-known brands and retailers you trust',
+    examples: 'H&M, Zara, Nike, ASOS, Gap, Nordstrom, PacSun, Hollister',
+  },
+  {
+    key:      'mixed',
+    label:    'Mainstream + indie',
+    sub:      'Established stores plus smaller or emerging brands',
+    examples: 'Everything above, boutiques, Revolve, smaller online stores',
+  },
+  {
+    key:      'open',
+    label:    'Anywhere',
+    sub:      "I'll shop wherever the best find is",
+    examples: 'eBay, TikTok Shop, Depop, indie brands, marketplace sellers',
+  },
+];
+
 // ─── Step labels ──────────────────────────────────────────────────
-const STEPS = ['Gender', 'Age', 'Budget', 'Stores', 'Vibe', 'Colors', 'Photos', 'Details', 'Done'];
+const STEPS = ['Gender', 'Age', 'Budget', 'Stores', 'Shopping Style', 'Vibe', 'Colors', 'Photos', 'Details', 'Done'];
 
 // ─── Stores dropdown (reused from StyleVault) ─────────────────────
 const ALL_STORES = [
@@ -196,6 +217,7 @@ export default function Onboarding() {
     age_range: '',
     budget: 200,
     favorite_stores: [],
+    store_openness_tiers: [],
     style_tags: [],
     color_palettes: [],
     pinterest_board_url: '',
@@ -244,6 +266,7 @@ export default function Onboarding() {
       age_range:             data.age_range || null,
       budget_tier:           String(data.budget),
       favorite_stores:       data.favorite_stores,
+      store_openness_tiers:  data.store_openness_tiers,
       style_tags:            data.style_tags,
       color_palettes:        data.color_palettes,
       pinterest_board_url:   boardUrl || null,
@@ -421,8 +444,53 @@ export default function Onboarding() {
             </div>
           )}
 
-          {/* ── Step 4: Style vibe ── */}
+          {/* ── Step 4: Shopping Style / Store openness ── */}
           {step === 4 && (
+            <div>
+              <h2 className="font-serif text-3xl tracking-tight mb-1">Where do you shop?</h2>
+              <p className="text-sm text-muted-foreground mb-8">Select all that apply — this shapes where your shopper looks for finds.</p>
+              <div className="space-y-3 mb-8">
+                {STORE_TIERS.map(tier => {
+                  const active = data.store_openness_tiers.includes(tier.key);
+                  return (
+                    <button
+                      key={tier.key}
+                      onClick={() => toggle('store_openness_tiers', tier.key)}
+                      className={`w-full flex items-start justify-between px-5 py-4 border transition text-left group ${
+                        active ? 'border-primary' : 'border-border hover:border-foreground/40'
+                      }`}
+                    >
+                      <div className="flex-1 pr-4">
+                        <div className={`text-sm font-medium transition ${active ? 'text-primary' : 'text-foreground'}`}>{tier.label}</div>
+                        <div className="text-xs text-muted-foreground mt-0.5">{tier.sub}</div>
+                        <div className="text-[10px] text-muted-foreground/50 mt-1 uppercase tracking-wider">{tier.examples}</div>
+                      </div>
+                      <div className={`w-4 h-4 border flex-shrink-0 mt-0.5 flex items-center justify-center transition ${
+                        active ? 'border-primary bg-primary' : 'border-border group-hover:border-foreground/40'
+                      }`}>
+                        {active && <Check className="w-2.5 h-2.5 text-primary-foreground" />}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={next}
+                  disabled={data.store_openness_tiers.length === 0}
+                  className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 text-sm hover:opacity-90 transition disabled:opacity-40"
+                >
+                  Continue <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+                <button onClick={next} className="text-xs text-muted-foreground hover:text-foreground transition">
+                  Skip
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ── Step 5: Style vibe ── */}
+          {step === 5 && (
             <div>
               <h2 className="font-serif text-3xl tracking-tight mb-1">What's your vibe?</h2>
               <p className="text-sm text-muted-foreground mb-8">Pick everything that feels like you. The more you select the better your shopper knows you.</p>
@@ -433,8 +501,8 @@ export default function Onboarding() {
             </div>
           )}
 
-          {/* ── Step 5: Colors ── */}
-          {step === 5 && (
+          {/* ── Step 6: Colors ── */}
+          {step === 6 && (
             <div>
               <h2 className="font-serif text-3xl tracking-tight mb-1">Color preferences?</h2>
               <p className="text-sm text-muted-foreground mb-8">Which palettes show up most in your wardrobe?</p>
@@ -463,8 +531,8 @@ export default function Onboarding() {
             </div>
           )}
 
-          {/* ── Step 6: Photo uploads ── */}
-          {step === 6 && (
+          {/* ── Step 7: Photo uploads ── */}
+          {step === 7 && (
             <div>
               <h2 className="font-serif text-3xl tracking-tight mb-1">Show your shopper your style.</h2>
               <p className="text-sm text-muted-foreground mb-2">
@@ -530,8 +598,8 @@ export default function Onboarding() {
             </div>
           )}
 
-          {/* ── Step 7: Optional details ── */}
-          {step === 7 && (
+          {/* ── Step 8: Optional details ── */}
+          {step === 8 && (
             <div>
               <h2 className="font-serif text-3xl tracking-tight mb-1">A few last details.</h2>
               <p className="text-sm text-muted-foreground mb-8">Optional — but the more your shopper knows, the better the fit.</p>
@@ -577,8 +645,8 @@ export default function Onboarding() {
             </div>
           )}
 
-          {/* ── Step 8: Done / Quiz entry ── */}
-          {step === 8 && (
+          {/* ── Step 9: Done / Quiz entry ── */}
+          {step === 9 && (
             <div className="text-center py-8">
               <div className="w-16 h-16 rounded-full bg-primary/10 border border-primary/30 flex items-center justify-center mx-auto mb-6">
                 <Check className="w-7 h-7 text-primary" />

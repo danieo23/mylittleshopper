@@ -859,6 +859,44 @@ export default function StyleVault() {
         />
       </Section>
 
+      {/* Shopping openness */}
+      <Section title="Shopping style" subtitle="Where you're willing to shop — shapes which sources Lychee draws from.">
+        <div className="space-y-2">
+          {[
+            { key: 'mainstream', label: 'Mainstream', desc: 'H&M, Zara, Nike, ASOS, Gap, Nordstrom and similar' },
+            { key: 'mixed',      label: 'Mainstream + indie', desc: 'Established brands plus smaller or emerging stores' },
+            { key: 'open',       label: 'Anywhere', desc: 'eBay, TikTok Shop, Depop, indie brands — anywhere' },
+          ].map(tier => {
+            const active = (profile.store_openness_tiers ?? []).includes(tier.key);
+            const toggle = async () => {
+              const current = profile.store_openness_tiers ?? [];
+              const next = active ? current.filter(k => k !== tier.key) : [...current, tier.key];
+              setProfile(p => ({ ...p, store_openness_tiers: next }));
+              await base44.entities.StyleProfile.update(profile.id, { store_openness_tiers: next });
+            };
+            return (
+              <button
+                key={tier.key}
+                onClick={toggle}
+                className={`w-full flex items-center justify-between px-4 py-3 border transition text-left ${
+                  active ? 'border-primary' : 'border-border hover:border-foreground/30'
+                }`}
+              >
+                <div>
+                  <div className={`text-xs font-medium uppercase tracking-wider ${active ? 'text-primary' : 'text-foreground'}`}>{tier.label}</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">{tier.desc}</div>
+                </div>
+                <div className={`w-4 h-4 border flex-shrink-0 flex items-center justify-center transition ${
+                  active ? 'border-primary bg-primary' : 'border-border'
+                }`}>
+                  {active && <Check className="w-2.5 h-2.5 text-primary-foreground" />}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </Section>
+
       {/* Gender */}
       <Section
         title="Shopping for"

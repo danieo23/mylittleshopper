@@ -384,7 +384,7 @@ Age-informed style baseline (supplement when DNA is sparse — actual DNA and st
 // ── System prompt ──────────────────────────────────────────────────
 function buildSystemPrompt(userProfile, recentConversations = []) {
   const { styleDna, confidenceLevel, imageCount, wallet,
-          favoriteStores, sizes, styleTags, pinterestBoardUrls, gender, ageRange } = userProfile;
+          favoriteStores, storeOpennessTiers, sizes, styleTags, pinterestBoardUrls, gender, ageRange } = userProfile;
 
   const dna = styleDna ?? {};
 
@@ -436,6 +436,15 @@ USER PROFILE (do not call any tool to fetch this — it is complete):
 - Brand rejections: ${dna.brand_rejections?.join(', ') || 'none'}
 - Aspiration gap (from Pinterest/inspo): ${dna.aspiration_gap?.join(', ') || 'none identified'}
 - Favorite stores: ${favoriteStores?.length ? favoriteStores.join(', ') : 'none set'}
+- Shopping openness: ${
+  !storeOpennessTiers?.length ? 'not set — default to mainstream and mixed sources' :
+  storeOpennessTiers.includes('open') && storeOpennessTiers.includes('mainstream') ? 'mainstream + mixed + open (any source, including eBay, TikTok Shop, indie brands)' :
+  storeOpennessTiers.includes('open') && storeOpennessTiers.includes('mixed') ? 'mixed + open (mainstream and emerging brands, eBay/TikTok Shop ok)' :
+  storeOpennessTiers.includes('open') ? 'open (any source — eBay, TikTok Shop, indie brands all ok)' :
+  storeOpennessTiers.includes('mainstream') && storeOpennessTiers.includes('mixed') ? 'mainstream + some indie (stick to established brands with occasional smaller finds)' :
+  storeOpennessTiers.includes('mixed') ? 'mixed (mainstream plus smaller/emerging brands)' :
+  'mainstream only (established brands and well-known retailers — avoid unknown/unverified sellers)'
+}
 - Sizes: ${sizeLine}
 ${agePrior}
 ${!dnaActive ? '\n⚠ Style DNA has not been synthesized yet. Use age-group baseline + style tags + aspiration gap as your primary signal until wardrobe/Pinterest analysis runs.' : ''}
@@ -793,6 +802,30 @@ async function runAgent(message, conversationHistory, userId, recentConversation
   console.log(`[slots] parsed ${requiredSlots.length} slots:`, requiredSlots.map(s => `${s.id}(${s.label})`).join(', ') || 'none (vague request)');
 
   if (requiredSlots.length > 0) {
+    // ── Pre-search clarification ──────────────────────────────────
+    // On the first message, if there's no occasion or vibe context,
+    // ask ONE targeted question before searching so results are focused.
+    // Skip if the user has already answered (conversationHistory has user messages).
+    const priorUserTurns = conversationHistory.filter(m => m.role === 'user').length;
+    const hasVibeContext = occasion !== null ||
+      /\b(casual|formal|edgy|minimal|vintage|streetwear|grunge|chill|clean|classic|preppy|coastal|retro|vibe|aesthetic|look|feel|style|inspired|inspo|mood|trip|travel|event|night|day|summer|winter|spring|fall)\b/i.test(message);
+
+    if (priorUserTurns === 0 && !hasVibeContext) {
+      const slotLabels = requiredSlots.map(s => s.label);
+      const uniqueLabels = [...new Set(slotLabels)].join(', ');
+      const ctxMsg = `[The user just asked for: ${uniqueLabels}. Before searching, ask ONE short question — about occasion, vibe, or any context that would meaningfully narrow results. Examples: What this is for (going out? work? travel?), or if there's a specific direction they're going for. Use [CHOICES] if 2–4 bounded options fit. Do NOT ask about budget, sizes, stores, or fit. Keep it to one sentence.]`;
+      const clarifyResp = await client.messages.create({
+        model:      LOOP_MODEL,
+        max_tokens: 200,
+        system:     buildSystemPrompt(userProfile, recentConversations),
+        messages:   [...conversationHistory, { role: 'user', content: message }, { role: 'user', content: ctxMsg }],
+      });
+      const { reply: clarifyText, choices: clarifyChoices } = parseChoices(
+        clarifyResp.content.find(b => b.type === 'text')?.text ?? ''
+      );
+      return { reply: clarifyText, history: messages, outfits: null, choices: clarifyChoices };
+    }
+
     const budget      = userProfile.wallet?.balance ?? 500;
     const slotCache   = await fillSlots(requiredSlots, userProfile, occasion, budget);
     const filled      = requiredSlots.filter(s => (slotCache[s.id]?.length ?? 0) > 0);
