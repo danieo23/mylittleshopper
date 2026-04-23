@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Upload, Loader2, Plus, X, Check, Pencil, Trash2, ArrowRight, ChevronDown, ShoppingBag, ExternalLink } from 'lucide-react';
+import { Upload, Loader2, Plus, X, Check, Pencil, Trash2, ArrowRight, ChevronDown, ShoppingBag, ExternalLink, MoveRight } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { base44, supabase } from '@/api/client';
 import heic2any from 'heic2any';
@@ -405,6 +405,16 @@ export default function StyleVault() {
   const [analyzingWardrobe, setAnalyzingWardrobe] = useState(false);
   const [wardrobeAnalyzeMsg, setWardrobeAnalyzeMsg] = useState('');
 
+  // Move-between-tabs state
+  const [movingItemId, setMovingItemId] = useState(null);
+
+  // Which destinations are valid from each tab
+  const MOVE_TARGETS = {
+    wardrobe: [{ key: 'outfit', label: 'Past Outfits' }, { key: 'inspo', label: 'Inspo' }],
+    outfit:   [{ key: 'wardrobe', label: 'Wardrobe'   }, { key: 'inspo', label: 'Inspo'  }],
+    inspo:    [{ key: 'wardrobe', label: 'Wardrobe'   }, { key: 'outfit', label: 'Past Outfits' }],
+  };
+
   // Pinterest boards (multiple)
   const [addingBoard, setAddingBoard]     = useState(false);
   const [boardInput, setBoardInput]       = useState('');
@@ -509,6 +519,46 @@ export default function StyleVault() {
       body:    JSON.stringify({ pinId }),
     });
     if (!res.ok) load(); // revert optimistic update if delete failed
+  };
+
+  const handleMove = async (item, destCategory) => {
+    setMovingItemId(null);
+
+    if (item._fromPinterest) {
+      // Pinterest-owned pin → wardrobe_items: copy attributes across, delete from aspiration_items
+      const res  = await fetch('/api/upload-wardrobe', {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          itemId:         item.id,
+          category:       destCategory,
+          fromAspiration: true,
+          userId,
+          imageUrl:       item.image_url,
+          colors:         item.colors,
+          fitType:        item.fit_type,
+          formalityScore: item.formality_score,
+          styleCategory:  item.style_category,
+          brand:          item.brand,
+        }),
+      });
+      const data = await res.json();
+      if (data.item) {
+        setAspirationItems(prev => prev.filter(p => p.id !== item.id));
+        setItems(prev => [...prev, data.item]);
+      } else {
+        load(); // fallback if something went wrong
+      }
+    } else {
+      // Wardrobe_item moving between tabs — optimistic update then persist
+      setItems(prev => prev.map(i => i.id === item.id ? { ...i, category: destCategory } : i));
+      const res = await fetch('/api/upload-wardrobe', {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ itemId: item.id, category: destCategory }),
+      });
+      if (!res.ok) load(); // revert on failure
+    }
   };
 
   const triggerWardrobeAnalysis = async (uid) => {
@@ -787,24 +837,56 @@ export default function StyleVault() {
             {allDisplayItems.map(it => (
               <div key={it.id} className="w-28 h-28 overflow-hidden bg-muted relative group shrink-0">
                 <img src={it.image_url} alt="" className="w-full h-full object-cover" />
-                {/* Pinterest badge for owned-board items */}
+
+                {/* Pinterest badge */}
                 {it._fromPinterest && (
                   <div className="absolute top-1 left-1 w-4 h-4 bg-[#e60023] rounded-full flex items-center justify-center pointer-events-none">
                     <span className="text-white font-bold" style={{ fontSize: 9, lineHeight: 1 }}>P</span>
                   </div>
                 )}
+
                 {it._preview ? (
                   <div className="absolute inset-0 flex items-center justify-center bg-black/30">
                     <Loader2 className="w-5 h-5 text-white animate-spin" />
                   </div>
+                ) : movingItemId === it.id ? (
+                  /* ── Move picker ── */
+                  <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center gap-1.5 p-2">
+                    <div className="text-[9px] text-white/60 uppercase tracking-widest mb-0.5">Move to</div>
+                    {MOVE_TARGETS[activeTab]?.map(dest => (
+                      <button
+                        key={dest.key}
+                        onClick={() => handleMove(it, dest.key)}
+                        className="w-full py-1 bg-white/20 hover:bg-white/40 text-white text-[9px] uppercase tracking-wider transition"
+                      >
+                        {dest.label}
+                      </button>
+                    ))}
+                    <button
+                      onClick={() => setMovingItemId(null)}
+                      className="w-full py-1 text-white/40 hover:text-white text-[9px] transition mt-0.5"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 ) : (
-                  <button
-                    onClick={() => it._fromPinterest ? removePin(it.id) : handleRemove(it)}
-                    className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 group-hover:opacity-100 transition"
-                    title="Remove"
-                  >
-                    <Trash2 className="w-5 h-5 text-white" />
-                  </button>
+                  /* ── Default hover: move + delete ── */
+                  <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition flex items-end justify-between p-1.5">
+                    <button
+                      onClick={() => setMovingItemId(it.id)}
+                      className="p-1 bg-black/30 hover:bg-black/60 transition"
+                      title="Move to…"
+                    >
+                      <MoveRight className="w-3.5 h-3.5 text-white" />
+                    </button>
+                    <button
+                      onClick={() => it._fromPinterest ? removePin(it.id) : handleRemove(it)}
+                      className="p-1 bg-black/30 hover:bg-red-500/80 transition"
+                      title="Remove"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-white" />
+                    </button>
+                  </div>
                 )}
               </div>
             ))}
