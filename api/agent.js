@@ -177,16 +177,28 @@ function parseRequestSlots(text) {
 
 /**
  * Build a style-aware search query for a specific slot.
+ * Always incorporates DNA (fit, color, style) and style tags — profile is always active.
  */
-function buildSlotQuery(slot, genderPrefix, dna, occasion) {
-  const fit   = dna?.dominant_fit && !['graphic_tee','band_tee','polo','tank_top','button_down','linen_shirt','oversized_tee','generic_top'].includes(slot.id?.split('_').slice(0,-1).join('_'))
-    ? dna.dominant_fit : '';
+function buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags = []) {
+  // Fit only makes sense for bottoms/outerwear — tops are item-specific enough
+  const TOP_SLOT_KEYS = ['graphic_tee','band_tee','polo','tank_top','button_down','linen_shirt','oversized_tee','generic_top'];
+  const slotKey = Object.entries(SLOT_DEFS).find(([, def]) =>
+    def.category === slot.category && def.label === slot.label
+  )?.[0] ?? '';
+  const fit   = dna?.dominant_fit && !TOP_SLOT_KEYS.includes(slotKey) ? dna.dominant_fit : '';
   const color = dna?.primary_colors?.[0] ? hexToBucket(dna.primary_colors[0]) : '';
-  const style = dna?.primary_style_category ?? '';
-  // Occasion words (max 2) for context
-  const occ   = occasion ? occasion.split(' ').slice(0, 2).join(' ') : '';
 
-  return [genderPrefix, fit, color, style, slot.modifiers, occ]
+  // Primary style from DNA, supplemented by the most relevant style tag for this item type
+  const dnaStyle = dna?.primary_style_category ?? '';
+  const tagStyle = styleTags.length
+    ? styleTags.slice(0, 2).map(t => t.toLowerCase()).join(' ')
+    : '';
+  const styleContext = [dnaStyle, tagStyle].filter(Boolean).join(' ').trim();
+
+  // Occasion words (max 2) for context
+  const occ = occasion ? occasion.split(' ').slice(0, 2).join(' ') : '';
+
+  return [genderPrefix, fit, color, styleContext, slot.modifiers, occ]
     .filter(Boolean)
     .join(' ')
     .replace(/\s+/g, ' ')
@@ -200,6 +212,7 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget) {
   const dna           = userProfile.styleDna;
   const gender        = userProfile.profile?.gender ?? userProfile.gender;
   const genderPrefix  = gender === 'men' ? "men's" : gender === 'nonbinary' ? 'unisex' : "women's";
+  const styleTags     = userProfile.styleTags ?? [];
   const opennessTiers = userProfile.storeOpennessTiers ?? [];
   const wantsBoutique = opennessTiers.includes('mixed') || opennessTiers.includes('open');
   const wantsThrift   = opennessTiers.includes('mixed') || opennessTiers.includes('open');
@@ -225,7 +238,7 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget) {
     const count = groupSlots.length;
 
     try {
-      const mainQuery = buildSlotQuery(slot, genderPrefix, dna, occasion);
+      const mainQuery = buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags);
       console.log(`[slot-group] "${slot.label}" x${count} | query: "${mainQuery}"`);
 
       // Always run main query. For N>1, add a second query variation for retailer diversity.
@@ -605,38 +618,36 @@ Profile is still building — style tags are your primary signal:
 Cross-reference with wardrobe before building outfits — don't suggest items they likely already own based on their existing style.
 Prioritize aspiration gap items — these are things they want but don't have yet.
 
-━━━ BOARD / INSPO REFERENCES — read this carefully before acting ━━━
+━━━ YOUR PROFILE IS ALWAYS ACTIVE — never wait to be told ━━━
 
-There are TWO completely different things a user can mean when they mention their board or inspo.
-Read the exact phrasing to decide which path to take. Getting this wrong is the #1 source of bad results.
+You are never starting from zero. Every single search you run is shaped by this user's complete
+style profile — wardrobe, Pinterest boards, inspiration uploads, style tags, and DNA. You do NOT
+need to be told to "use your profile," "take inspiration from my board," or "keep my aesthetic in
+mind." You are already doing this. It is not optional and not triggered by phrases.
 
-─── PATH 1: STYLE GUIDANCE (most common) ───
-Trigger phrases: "take inspiration from my board/profile", "inspired by my board", "in the style of my inspo",
-  "using my board as reference", "based on my Pinterest", "with my aesthetic", "my vibe"
+What is always baked into your searches:
+  • Primary + secondary colors    → use the most relevant one in every query
+  • Dominant fit                  → bake into every bottoms/outerwear/tops query
+  • Primary style + style tags    → shape the aesthetic language of every query
+  • Aspiration gap (from boards)  → what they want but don't have — proactively surface these
+  • Brand affinities/rejections   → favor affinities, note rejections when relevant
 
-What this means: Use the board's colors, aesthetic, and style as context for search queries.
-DO NOT call get_inspo_products. Instead, pull the style signals already embedded in this system prompt
-(DNA, style tags, aspiration gap, primary colors) and bake them into style-aware search_products queries.
+The Style DNA was built FROM their boards and inspo photos. When you search using the DNA, you
+ARE already using their board. Never say "I'll use your board for this" — it is already happening.
+Never reference the profile only when asked — reference it in every reply, unprompted.
 
-→ Search for the items the user explicitly asked for, with the board's aesthetic woven into the query.
-Example: user says "take inspo from my board and find me button-down shirts for Italy"
-  Correct: search_products("men's relaxed linen vintage button-down shirt coastal euro casual")
-  WRONG:   call get_inspo_products — this returns cached board products (likely hoodies/jeans), not button-downs
+─── The ONE case for get_inspo_products ───
+Only call this when the user explicitly wants actual products visually matched to their saved pins:
+  "show me things from my inspo pictures", "find stuff like what I saved/pinned", "shop my board",
+  "products similar to my Pinterest saves"
 
-─── PATH 2: PRODUCT RETRIEVAL (explicit) ───
-Trigger phrases: "like my board", "similar to what's on my board", "from my Pinterest", "shop my board",
-  "find me stuff like what I saved/pinned", "show me things like my inspo pictures"
-
-What this means: The user wants actual products visually matched to their saved images.
-→ Call get_inspo_products. These are Google Lens-matched products from their pins — highly accurate for this.
-→ If the user also named specific items (e.g. "like my board but also find sneakers"), ALSO call search_products for those specific categories in the same turn.
-→ If get_inspo_products returns has_results: false, tell the user briefly then fall back to search_products.
-
-─── THE KEY RULE ───
-"Inspiration/inspired by" = style guidance → search_products with DNA-aware queries
-"Like/similar to/from my board" = product retrieval → get_inspo_products
-
-When in doubt, default to PATH 1. A bad inspo retrieval returns wrong products. A style-guided search always finds the right item type.
+→ This is PRODUCT RETRIEVAL — returning items matched to specific saved images.
+→ Style guidance is always already active via DNA. These are separate.
+→ If the user says "inspired by my board, find me flannels" — do NOT call get_inspo_products.
+   Search for flannels using the DNA (which IS their board's aesthetic already).
+   get_inspo_products returns whatever is in their pins (could be anything), not necessarily flannels.
+→ If get_inspo_products returns has_results: false, say so briefly and fall back to search_products.
+→ If the user asks for "stuff like my board" AND specific items, call both in the same turn.
 
 ━━━ SEARCH RULES ━━━
 
