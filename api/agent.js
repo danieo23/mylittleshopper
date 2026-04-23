@@ -247,6 +247,7 @@ OTHER RULES:
 - Keep text replies to 1–3 sentences
 - Never invent products. All recommendations must come from search_products.
 - If search returns an error, tell the user exactly what failed.
+- NEVER say you are "hitting a search limit", "can't search right now", or imply a technical block unless search_products literally returned an error. You always have the ability to search. If you need more info before searching, just ask — do not invent a limit as an excuse.
 
 ━━━ FORMATTING — STRICT ━━━
 
@@ -338,7 +339,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
     { role: 'user', content: message },
   ];
 
-  const LOOP_MODEL  = 'claude-haiku-4-5-20251001';
+  const LOOP_MODEL  = 'claude-sonnet-4-6';
   const LOOP_TOKENS = 4096;
 
   let lastOutfits      = null;
