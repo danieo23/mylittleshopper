@@ -246,7 +246,36 @@ OTHER RULES:
 - If wallet is insufficient for an order, state the shortfall and stop
 - Keep text replies to 1–3 sentences
 - Never invent products. All recommendations must come from search_products.
-- If search returns an error, tell the user exactly what failed.`;
+- If search returns an error, tell the user exactly what failed.
+
+━━━ FORMATTING — STRICT ━━━
+
+Plain text only. The UI does not render markdown.
+- NO asterisks for bold or italic (**word** or *word* will display as raw asterisks to the user)
+- NO pound signs for headers
+- NO hyphens or asterisks as bullet points
+- Use a plain numbered list (1. 2. 3.) only when truly needed
+- Em-dash (—) is fine for separation. ALL CAPS for emphasis if needed.
+
+QUICK-REPLY CHOICES:
+When your clarifying question has 2–4 bounded options (activity type, occasion, style direction — NOT open-ended things like budget or item count), append this tag on its own line at the very end of your message:
+[CHOICES: option one | option two | option three]
+
+The UI renders these as tap-able buttons — do not list the options again in your text.
+Good use: "What kind of activities are you packing for?\n[CHOICES: Beach + casual | City exploring | Dinners out | Mix of all]"
+Good use: "Is this more of a work thing or going-out thing?\n[CHOICES: Work / office | Going out | Both]"
+Bad use: budget questions, item count, anything needing a typed answer — no [CHOICES] for those.`;
+}
+
+// ── Choices parser ─────────────────────────────────────────────────
+// Strips [CHOICES: a | b | c] from the end of agent text and returns
+// { reply: cleanText, choices: string[] | null }
+function parseChoices(text) {
+  const match = text.match(/\[CHOICES:\s*([^\]]+)\]\s*$/i);
+  if (!match) return { reply: text.trim(), choices: null };
+  const choices = match[1].split('|').map(s => s.trim()).filter(Boolean);
+  const reply   = text.slice(0, match.index).trim();
+  return { reply, choices: choices.length >= 2 ? choices : null };
 }
 
 // ── Tool execution ─────────────────────────────────────────────────
@@ -413,13 +442,15 @@ async function runAgent(message, conversationHistory, userId, recentConversation
       system:     buildSystemPrompt(userProfile, recentConversations),
       messages,
     });
-    const recoveryText = recovery.content.find(b => b.type === 'text')?.text
+    const rawRecovery = recovery.content.find(b => b.type === 'text')?.text
       ?? "I hit a snag sourcing everything in one shot — try breaking the request into smaller pieces.";
-    return { reply: recoveryText, history: messages, outfits: lastOutfits };
+    const { reply: recoveryText, choices: recoveryChoices } = parseChoices(rawRecovery);
+    return { reply: recoveryText, history: messages, outfits: lastOutfits, choices: recoveryChoices };
   }
 
-  const finalText = response.content.find(b => b.type === 'text')?.text ?? '';
-  return { reply: finalText, history: messages, outfits: lastOutfits };
+  const rawText   = response.content.find(b => b.type === 'text')?.text ?? '';
+  const { reply: finalText, choices } = parseChoices(rawText);
+  return { reply: finalText, history: messages, outfits: lastOutfits, choices };
 }
 
 export default async function handler(req, res) {

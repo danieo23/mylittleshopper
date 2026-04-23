@@ -470,7 +470,7 @@ export default function Dashboard() {
       setLoading(false);
 
       const replyText = data.reply || (data.outfits ? '' : 'Something went wrong — please try again.');
-      const aiMsg     = { role: 'ai', text: replyText, outfits: data.outfits ?? null };
+      const aiMsg     = { role: 'ai', text: replyText, outfits: data.outfits ?? null, choices: data.choices ?? null };
 
       setMessages(prev => {
         const fullMsgs = [...prev, aiMsg];
@@ -586,6 +586,19 @@ export default function Dashboard() {
                             : 'bg-card border border-border text-foreground'
                         }`}>
                           {msg.text}
+                        </div>
+                      )}
+                      {msg.choices && i === messages.length - 1 && (
+                        <div className="flex flex-wrap gap-2 mt-2 max-w-[75%]">
+                          {msg.choices.map((choice, ci) => (
+                            <button
+                              key={ci}
+                              onClick={() => send(choice)}
+                              className="px-3 py-1.5 text-xs border border-border bg-card hover:bg-primary hover:text-primary-foreground hover:border-primary transition-colors"
+                            >
+                              {choice}
+                            </button>
+                          ))}
                         </div>
                       )}
                       {!msg.text && !msg.outfits && (
