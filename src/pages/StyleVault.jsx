@@ -685,9 +685,15 @@ export default function StyleVault() {
     </div>
   );
 
-  // Merge persisted items with optimistic previews for the active tab
+  // Owned Pinterest pins — treated as "Past Outfits" (looks you've actually worn)
+  const ownedPinItems = aspirationItems
+    .filter(p => p.source_type === 'pinterest_owned')
+    .map(p => ({ ...p, category: 'outfit', _fromPinterest: true }));
+
+  // Merge persisted items + owned Pinterest pins + optimistic previews for the active tab
   const allDisplayItems = [
     ...items.filter(it => it.category === activeTab),
+    ...(activeTab === 'outfit' ? ownedPinItems : []),
     ...previews.filter(p => p.category === activeTab),
   ];
 
@@ -735,7 +741,9 @@ export default function StyleVault() {
               }`}
             >
               {tab.label}
-              <span className="ml-1.5 text-[10px] opacity-60">({items.filter(i => i.category === tab.key).length})</span>
+              <span className="ml-1.5 text-[10px] opacity-60">
+                ({items.filter(i => i.category === tab.key).length + (tab.key === 'outfit' ? ownedPinItems.length : 0)})
+              </span>
             </button>
           ))}
         </div>
@@ -779,13 +787,19 @@ export default function StyleVault() {
             {allDisplayItems.map(it => (
               <div key={it.id} className="w-28 h-28 overflow-hidden bg-muted relative group shrink-0">
                 <img src={it.image_url} alt="" className="w-full h-full object-cover" />
+                {/* Pinterest badge for owned-board items */}
+                {it._fromPinterest && (
+                  <div className="absolute top-1 left-1 w-4 h-4 bg-[#e60023] rounded-full flex items-center justify-center pointer-events-none">
+                    <span className="text-white font-bold" style={{ fontSize: 9, lineHeight: 1 }}>P</span>
+                  </div>
+                )}
                 {it._preview ? (
                   <div className="absolute inset-0 flex items-center justify-center bg-black/30">
                     <Loader2 className="w-5 h-5 text-white animate-spin" />
                   </div>
                 ) : (
                   <button
-                    onClick={() => handleRemove(it)}
+                    onClick={() => it._fromPinterest ? removePin(it.id) : handleRemove(it)}
                     className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 group-hover:opacity-100 transition"
                     title="Remove"
                   >

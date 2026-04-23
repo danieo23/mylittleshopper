@@ -1,4 +1,7 @@
 {
+  "rewrites": [
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ],
   "functions": {
     "api/agent.js":   { "maxDuration": 60 },
     "api/analyze.js": { "maxDuration": 60 },
