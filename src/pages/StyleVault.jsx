@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Upload, Loader2, Plus, X, Check, Pencil, Trash2, ArrowRight, ChevronDown, ShoppingBag, ExternalLink, MoveRight } from 'lucide-react';
+import { Upload, Loader2, Plus, X, Check, Pencil, Trash2, ArrowRight, ChevronDown, ShoppingBag, ExternalLink } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { base44, supabase } from '@/api/client';
 import heic2any from 'heic2any';
@@ -405,8 +405,9 @@ export default function StyleVault() {
   const [analyzingWardrobe, setAnalyzingWardrobe] = useState(false);
   const [wardrobeAnalyzeMsg, setWardrobeAnalyzeMsg] = useState('');
 
-  // Move-between-tabs state
-  const [movingItemId, setMovingItemId] = useState(null);
+  // Multi-select move state
+  const [selectMode, setSelectMode]   = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
 
   // Which destinations are valid from each tab
   const MOVE_TARGETS = {
@@ -521,8 +522,24 @@ export default function StyleVault() {
     if (!res.ok) load(); // revert optimistic update if delete failed
   };
 
+  const toggleSelect = (id) => setSelectedIds(prev => {
+    const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next;
+  });
+  const exitSelectMode = () => { setSelectMode(false); setSelectedIds(new Set()); };
+  const handleBulkMove = async (destCategory) => {
+    const toMove = allDisplayItems.filter(it => selectedIds.has(it.id));
+    exitSelectMode();
+    for (const item of toMove) await handleMove(item, destCategory);
+  };
+  const handleBulkDelete = async () => {
+    const toDelete = allDisplayItems.filter(it => selectedIds.has(it.id));
+    exitSelectMode();
+    for (const item of toDelete) {
+      if (item._fromPinterest) await removePin(item.id); else await handleRemove(item);
+    }
+  };
+
   const handleMove = async (item, destCategory) => {
-    setMovingItemId(null);
 
     if (item._fromPinterest) {
       // Pinterest-owned pin → wardrobe_items: copy attributes across, delete from aspiration_items
@@ -783,23 +800,52 @@ export default function StyleVault() {
           </div>
         }
       >
-        <div className="flex gap-0 border-b border-border mb-5">
-          {PHOTO_TABS.map(tab => (
-            <button key={tab.key} onClick={() => setActiveTab(tab.key)}
-              className={`px-4 py-2 text-xs uppercase tracking-wider border-b-2 transition -mb-px ${
-                activeTab === tab.key ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
+        <div className="flex items-center justify-between border-b border-border mb-5 -mb-px">
+          <div className="flex gap-0">
+            {PHOTO_TABS.map(tab => (
+              <button key={tab.key} onClick={() => { setActiveTab(tab.key); exitSelectMode(); }}
+                className={`px-4 py-2 text-xs uppercase tracking-wider border-b-2 transition -mb-px ${
+                  activeTab === tab.key ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {tab.label}
+                <span className="ml-1.5 text-[10px] opacity-60">
+                  ({items.filter(i => i.category === tab.key).length + (tab.key === 'outfit' ? ownedPinItems.length : 0)})
+                </span>
+              </button>
+            ))}
+          </div>
+          {allDisplayItems.length > 0 && (
+            <button
+              onClick={() => selectMode ? exitSelectMode() : setSelectMode(true)}
+              className={`pb-2 text-xs uppercase tracking-wider transition ${
+                selectMode ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
               }`}
             >
-              {tab.label}
-              <span className="ml-1.5 text-[10px] opacity-60">
-                ({items.filter(i => i.category === tab.key).length + (tab.key === 'outfit' ? ownedPinItems.length : 0)})
-              </span>
+              {selectMode ? 'Cancel' : 'Select'}
             </button>
-          ))}
+          )}
         </div>
 
         {uploadError && (
           <p className="mb-3 text-xs text-destructive">{uploadError}</p>
+        )}
+
+        {/* Bulk action bar */}
+        {selectMode && selectedIds.size > 0 && (
+          <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-primary/10 border border-primary/30">
+            <span className="text-xs text-primary flex-1">{selectedIds.size} selected</span>
+            {MOVE_TARGETS[activeTab]?.map(dest => (
+              <button key={dest.key} onClick={() => handleBulkMove(dest.key)}
+                className="px-3 py-1.5 bg-primary text-primary-foreground text-[10px] uppercase tracking-wider hover:bg-primary/80 transition">
+                → {dest.label}
+              </button>
+            ))}
+            <button onClick={handleBulkDelete}
+              className="px-3 py-1.5 border border-destructive text-destructive text-[10px] uppercase tracking-wider hover:bg-destructive hover:text-white transition">
+              Delete
+            </button>
+          </div>
         )}
 
         {allDisplayItems.length === 0 ? (
@@ -849,36 +895,21 @@ export default function StyleVault() {
                   <div className="absolute inset-0 flex items-center justify-center bg-black/30">
                     <Loader2 className="w-5 h-5 text-white animate-spin" />
                   </div>
-                ) : movingItemId === it.id ? (
-                  /* ── Move picker ── */
-                  <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center gap-1.5 p-2">
-                    <div className="text-[9px] text-white/60 uppercase tracking-widest mb-0.5">Move to</div>
-                    {MOVE_TARGETS[activeTab]?.map(dest => (
-                      <button
-                        key={dest.key}
-                        onClick={() => handleMove(it, dest.key)}
-                        className="w-full py-1 bg-white/20 hover:bg-white/40 text-white text-[9px] uppercase tracking-wider transition"
-                      >
-                        {dest.label}
-                      </button>
-                    ))}
-                    <button
-                      onClick={() => setMovingItemId(null)}
-                      className="w-full py-1 text-white/40 hover:text-white text-[9px] transition mt-0.5"
-                    >
-                      Cancel
-                    </button>
+                ) : selectMode ? (
+                  /* ── Select mode: tap to toggle ── */
+                  <div className="absolute inset-0 cursor-pointer" onClick={() => toggleSelect(it.id)}>
+                    {selectedIds.has(it.id) && (
+                      <div className="absolute inset-0 bg-primary/30 border-2 border-primary pointer-events-none" />
+                    )}
+                    <div className={`absolute top-1.5 right-1.5 w-5 h-5 rounded-full border-2 flex items-center justify-center pointer-events-none ${
+                      selectedIds.has(it.id) ? 'bg-primary border-primary' : 'bg-black/40 border-white/70'
+                    }`}>
+                      {selectedIds.has(it.id) && <Check className="w-3 h-3 text-white" />}
+                    </div>
                   </div>
                 ) : (
-                  /* ── Default hover: move + delete ── */
-                  <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition flex items-end justify-between p-1.5">
-                    <button
-                      onClick={() => setMovingItemId(it.id)}
-                      className="p-1 bg-black/30 hover:bg-black/60 transition"
-                      title="Move to…"
-                    >
-                      <MoveRight className="w-3.5 h-3.5 text-white" />
-                    </button>
+                  /* ── Default hover: delete ── */
+                  <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition flex items-end justify-end p-1.5">
                     <button
                       onClick={() => it._fromPinterest ? removePin(it.id) : handleRemove(it)}
                       className="p-1 bg-black/30 hover:bg-red-500/80 transition"
