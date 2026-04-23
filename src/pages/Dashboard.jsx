@@ -120,20 +120,20 @@ function ProductCard({ item, onReroll, onLike, onDislike, swapping }) {
           </div>
         )}
 
-        {/* Prev/next image arrows */}
+        {/* Prev/next image arrows — always visible when multiple images */}
         {images.length > 1 && (
           <>
             <button
               onClick={e => { e.preventDefault(); setImgIdx(i => (i - 1 + images.length) % images.length); }}
-              className="absolute left-1 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center bg-black/30 hover:bg-black/50 transition opacity-0 group-hover:opacity-100"
+              className="absolute left-1 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center bg-black/40 hover:bg-black/60 transition"
             >
-              <ChevronLeft className="w-3.5 h-3.5 text-white" />
+              <ChevronLeft className="w-4 h-4 text-white" />
             </button>
             <button
               onClick={e => { e.preventDefault(); setImgIdx(i => (i + 1) % images.length); }}
-              className="absolute right-1 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center bg-black/30 hover:bg-black/50 transition opacity-0 group-hover:opacity-100"
+              className="absolute right-1 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center bg-black/40 hover:bg-black/60 transition"
             >
-              <ChevronRight className="w-3.5 h-3.5 text-white" />
+              <ChevronRight className="w-4 h-4 text-white" />
             </button>
           </>
         )}
@@ -141,7 +141,7 @@ function ProductCard({ item, onReroll, onLike, onDislike, swapping }) {
         {url && (
           <a
             href={url} target="_blank" rel="noopener noreferrer"
-            className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center bg-black/30 hover:bg-black/50 transition opacity-0 group-hover:opacity-100"
+            className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center bg-black/40 hover:bg-black/60 transition"
           >
             <ExternalLink className="w-3 h-3 text-white" />
           </a>

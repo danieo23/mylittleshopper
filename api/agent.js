@@ -197,73 +197,87 @@ function buildSlotQuery(slot, genderPrefix, dna, occasion) {
  * Execute one search per slot in parallel. Returns { slotId: products[] }.
  */
 async function fillSlots(requiredSlots, userProfile, occasion, budget) {
-  const dna              = userProfile.styleDna;
-  const gender           = userProfile.profile?.gender ?? userProfile.gender;
-  const genderPrefix     = gender === 'men' ? "men's" : gender === 'nonbinary' ? 'unisex' : "women's";
-  const opennessTiers    = userProfile.storeOpennessTiers ?? [];
-  const wantsBoutique    = opennessTiers.includes('mixed') || opennessTiers.includes('open');
-  const wantsThrift      = opennessTiers.includes('mixed') || opennessTiers.includes('open');
-  const dislikedNames    = (dna?.explicit_dislikes?.product_names ?? [])
+  const dna           = userProfile.styleDna;
+  const gender        = userProfile.profile?.gender ?? userProfile.gender;
+  const genderPrefix  = gender === 'men' ? "men's" : gender === 'nonbinary' ? 'unisex' : "women's";
+  const opennessTiers = userProfile.storeOpennessTiers ?? [];
+  const wantsBoutique = opennessTiers.includes('mixed') || opennessTiers.includes('open');
+  const wantsThrift   = opennessTiers.includes('mixed') || opennessTiers.includes('open');
+  const dislikedNames = (dna?.explicit_dislikes?.product_names ?? [])
     .map(n => n.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 50));
 
+  const nameKey = name => (name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40);
   const slotCache = {};
 
-  const normalize = (p, slotId, subtype) => ({
-    ...p,
-    _score:   scoreProductMatch(p, dna, occasion).score,
-    _slot_id: slotId,
-    _subtype: subtype,
-  });
+  // ── Group slots by type (same label+category = same search) ──────
+  // When user asks for "2 graphic tees", we get 2 identical slots.
+  // Run ONE search per unique type, build a large pool, then assign
+  // results in offset order so each slot gets a DIFFERENT product.
+  const typeGroups = new Map();
+  for (const slot of requiredSlots) {
+    const sig = `${slot.category}|${slot.label}`;
+    if (!typeGroups.has(sig)) typeGroups.set(sig, []);
+    typeGroups.get(sig).push(slot);
+  }
 
-  const applyFilters = (scored, slot) => {
-    const kwFiltered = slot.keywords?.length
-      ? scored.filter(p => slot.keywords.some(kw => (p.name ?? '').toLowerCase().includes(kw)))
-      : scored;
-    const candidates = kwFiltered.length >= 2 ? kwFiltered : scored;
-    return candidates.filter(p => {
-      const key = (p.name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 50);
-      return !dislikedNames.includes(key);
-    });
-  };
+  await Promise.all([...typeGroups.values()].map(async (groupSlots) => {
+    const slot  = groupSlots[0];
+    const count = groupSlots.length;
 
-  await Promise.all(requiredSlots.map(async slot => {
     try {
       const mainQuery = buildSlotQuery(slot, genderPrefix, dna, occasion);
-      console.log(`[slot] ${slot.id} | "${slot.label}" | query: "${mainQuery}"`);
+      console.log(`[slot-group] "${slot.label}" x${count} | query: "${mainQuery}"`);
 
-      // Build augmented queries for boutique/thrift tiers (run in parallel with main search)
-      const extraQueries = [];
-      if (wantsBoutique) {
-        extraQueries.push(`${genderPrefix} boutique indie ${slot.modifiers}`);
+      // Always run main query. For N>1, add a second query variation for retailer diversity.
+      // Boutique/thrift extra queries based on openness tier.
+      const queries = [mainQuery];
+      if (count > 1) {
+        // Second variation: strip fit/color, rely on style + item type → different retailer pool
+        queries.push(`${genderPrefix} ${slot.modifiers} ${occasion ? occasion.split(' ')[0] : ''}`);
       }
-      if (wantsThrift) {
-        extraQueries.push(`${genderPrefix} thrift vintage secondhand ${slot.modifiers}`);
-      }
+      if (wantsBoutique) queries.push(`${genderPrefix} boutique indie ${slot.modifiers}`);
+      if (wantsThrift)   queries.push(`${genderPrefix} thrift vintage secondhand ${slot.modifiers}`);
 
-      const [mainRaw, ...extraRaws] = await Promise.all([
-        searchProducts({ query: mainQuery, category: slot.category, maxPrice: budget }),
-        ...extraQueries.map(q => searchProducts({ query: q, category: slot.category, maxPrice: budget }).catch(() => [])),
-      ]);
+      const raws = await Promise.all(
+        queries.map(q => searchProducts({ query: q.trim(), category: slot.category, maxPrice: budget }).catch(() => []))
+      );
 
-      // Merge all results, dedupe by name, score everything
-      const allRaw = [...mainRaw, ...extraRaws.flat()];
-      const seen   = new Set();
-      const unique = allRaw.filter(p => {
-        const key = (p.name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40);
-        if (seen.has(key)) return false;
-        seen.add(key);
+      // Merge + dedupe by name
+      const seen = new Set();
+      const unique = raws.flat().filter(p => {
+        const k = nameKey(p.name);
+        if (seen.has(k)) return false;
+        seen.add(k);
         return true;
       });
 
-      const scored  = unique.map(p => normalize(p, slot.id, slot.label));
-      const clean   = applyFilters(scored, slot);
+      // Score + keyword filter + dislike removal
+      const scored = unique.map(p => ({
+        ...p,
+        _score:   scoreProductMatch(p, dna, occasion).score,
+        _slot_id: slot.id,
+        _subtype: slot.label,
+      }));
 
-      slotCache[slot.id] = clean.sort((a, b) => b._score - a._score).slice(0, 10);
+      const kwFiltered = slot.keywords?.length
+        ? scored.filter(p => slot.keywords.some(kw => (p.name ?? '').toLowerCase().includes(kw)))
+        : scored;
+      const kwPool = kwFiltered.length >= count * 2 ? kwFiltered : scored;
+      const pool   = kwPool
+        .filter(p => !dislikedNames.includes(nameKey(p.name)))
+        .sort((a, b) => b._score - a._score)
+        .slice(0, 20);
 
-      console.log(`[slot] ${slot.id}: ${mainRaw.length} main + ${extraRaws.flat().length} augmented → ${slotCache[slot.id].length} final`);
+      // Assign to each slot in the group with offset so each gets a unique product.
+      // Slot 0 → pool[0..], Slot 1 → pool[1..], etc.
+      groupSlots.forEach((s, offset) => {
+        slotCache[s.id] = pool.slice(offset);
+      });
+
+      console.log(`[slot-group] "${slot.label}" x${count}: ${raws.flat().length} raw → ${pool.length} pool`);
     } catch (err) {
-      console.error(`[slot] ${slot.id} search failed:`, err.message);
-      slotCache[slot.id] = [];
+      console.error(`[slot-group] "${slot.label}" search failed:`, err.message);
+      groupSlots.forEach(s => { slotCache[s.id] = []; });
     }
   }));
 
@@ -272,13 +286,20 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget) {
 
 /**
  * Build a deterministic product card from filled slots.
- * Picks top-scored product from each slot. No LLM needed.
+ * Picks the top-scored UNIQUE product per slot — global dedup ensures
+ * the same product never appears twice even if slot pools overlap.
  */
 function buildShoppingBoard(requiredSlots, slotCache) {
-  const catLabel = { tops: 'top', bottoms: 'bottom', shoes: 'shoes', outerwear: 'outerwear', dress: 'dress', accessories: 'accessory' };
+  const catLabel    = { tops: 'top', bottoms: 'bottom', shoes: 'shoes', outerwear: 'outerwear', dress: 'dress', accessories: 'accessory' };
+  const usedNames   = new Set();
+  const nameKey     = name => (name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40);
+
   const items = requiredSlots.map(slot => {
-    const best = (slotCache[slot.id] ?? [])[0];
+    const candidates = slotCache[slot.id] ?? [];
+    // Find the first candidate whose name hasn't been used in this board
+    const best = candidates.find(p => !usedNames.has(nameKey(p.name)));
     if (!best) return null;
+    usedNames.add(nameKey(best.name));
     return {
       category:     catLabel[slot.category] ?? slot.category,
       product_name: best.name,
