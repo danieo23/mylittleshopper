@@ -36,23 +36,33 @@ export async function updateStyleDna(userId, signalType, itemAttributes, swapTar
 
   // 3. Apply signal logic
   if (signalType === 'rejection' || signalType === 'post_delivery_negative') {
-    const weight = signalType === 'post_delivery_negative' ? 3 : 1;
+    const dislikes = { ...(dna.explicit_dislikes ?? {}) };
 
     // Track avoided colors
     if (itemAttributes.colors?.length) {
       const avoided = [...(dna.avoided_colors ?? [])];
-      for (const color of itemAttributes.colors) {
-        avoided.push(color);
-      }
-      // Deduplicate but keep frequency implicitly by checking patterns
+      for (const color of itemAttributes.colors) avoided.push(color);
       updates.avoided_colors = [...new Set(avoided)].slice(0, 10);
     }
 
     // Track rejected fits
     if (itemAttributes.fit_type) {
-      const dislikes = { ...(dna.explicit_dislikes ?? {}) };
-      dislikes.fits  = [...new Set([...(dislikes.fits ?? []), itemAttributes.fit_type])];
-      updates.explicit_dislikes = dislikes;
+      dislikes.fits = [...new Set([...(dislikes.fits ?? []), itemAttributes.fit_type])];
+    }
+
+    // Track rejected style categories
+    if (itemAttributes.style_category) {
+      dislikes.styles = [...new Set([...(dislikes.styles ?? []), itemAttributes.style_category])];
+    }
+
+    updates.explicit_dislikes = dislikes;
+
+    // Track rejected brands
+    if (itemAttributes.brand) {
+      const rejections = dna.brand_rejections ?? [];
+      if (!rejections.includes(itemAttributes.brand)) {
+        updates.brand_rejections = [...rejections, itemAttributes.brand].slice(0, 20);
+      }
     }
   }
 
@@ -71,9 +81,34 @@ export async function updateStyleDna(userId, signalType, itemAttributes, swapTar
     if (itemAttributes.category && itemAttributes.price) {
       const sensitivity = { ...(dna.per_category_price_sensitivity ?? {}) };
       const existing    = sensitivity[itemAttributes.category] ?? itemAttributes.price;
-      // Weighted average — approvals nudge the typical spend toward this price
       sensitivity[itemAttributes.category] = Math.round((existing * 2 + itemAttributes.price) / 3);
       updates.per_category_price_sensitivity = sensitivity;
+    }
+
+    // Reinforce style category — nudge toward approved aesthetic
+    if (itemAttributes.style_category) {
+      const primary    = dna.primary_style_category;
+      const secondary  = [...(dna.secondary_categories ?? [])];
+      if (itemAttributes.style_category === primary) {
+        // Already primary — no change needed, DNA synthesis will handle weight
+      } else if (!secondary.includes(itemAttributes.style_category)) {
+        // New style being approved — add to secondary (capped at 2)
+        secondary.push(itemAttributes.style_category);
+        updates.secondary_categories = secondary.slice(-2);
+      }
+    }
+
+    // Reinforce primary colors from approved item
+    if (itemAttributes.colors?.length) {
+      const primary   = [...(dna.primary_colors ?? [])];
+      const secondary = [...(dna.secondary_colors ?? [])];
+      for (const color of itemAttributes.colors) {
+        if (!primary.includes(color) && !secondary.includes(color)) {
+          // New color being approved — add to secondary palette
+          secondary.push(color);
+        }
+      }
+      updates.secondary_colors = [...new Set(secondary)].slice(0, 8);
     }
   }
 
@@ -100,25 +135,49 @@ export async function updateStyleDna(userId, signalType, itemAttributes, swapTar
 async function _promoteConfirmedPreferences(userId, dna) {
   const { data: signals } = await supabase
     .from('feedback_signals')
-    .select('signal_type, item_attributes_json, inferred_reason')
+    .select('signal_type, item_attributes_json')
     .eq('user_id', userId)
     .in('signal_type', ['rejection', 'swap']);
 
   if (!signals?.length) return;
 
-  // Count fit rejections
-  const fitRejections = {};
+  const fitCounts   = {};
+  const styleCounts = {};
+  const brandCounts = {};
+
   for (const s of signals) {
-    const fit = s.item_attributes_json?.fit_type;
-    if (fit) fitRejections[fit] = (fitRejections[fit] ?? 0) + 1;
+    const attr = s.item_attributes_json ?? {};
+    if (attr.fit_type)       fitCounts[attr.fit_type]         = (fitCounts[attr.fit_type]         ?? 0) + 1;
+    if (attr.style_category) styleCounts[attr.style_category] = (styleCounts[attr.style_category] ?? 0) + 1;
+    if (attr.brand)          brandCounts[attr.brand]          = (brandCounts[attr.brand]          ?? 0) + 1;
   }
 
-  const confirmedRejectedFits = Object.entries(fitRejections)
-    .filter(([, count]) => count >= 3)
-    .map(([fit]) => fit);
+  const dnaUpdates = {};
 
-  if (confirmedRejectedFits.length > 0) {
-    const dislikes = { ...(dna.explicit_dislikes ?? {}), fits: confirmedRejectedFits };
-    await supabase.from('style_dna').update({ explicit_dislikes: dislikes }).eq('user_id', userId);
+  // Promote confirmed rejected fits (3+ signals)
+  const confirmedFits = Object.entries(fitCounts).filter(([, n]) => n >= 3).map(([f]) => f);
+  if (confirmedFits.length) {
+    const dislikes = { ...(dna.explicit_dislikes ?? {}), fits: confirmedFits };
+    dnaUpdates.explicit_dislikes = dislikes;
+  }
+
+  // Promote confirmed rejected styles (3+ signals)
+  const confirmedStyles = Object.entries(styleCounts).filter(([, n]) => n >= 3).map(([s]) => s);
+  if (confirmedStyles.length) {
+    const dislikes = dnaUpdates.explicit_dislikes ?? { ...(dna.explicit_dislikes ?? {}) };
+    dislikes.styles = confirmedStyles;
+    dnaUpdates.explicit_dislikes = dislikes;
+  }
+
+  // Promote confirmed rejected brands (3+ signals)
+  const confirmedBrandRejections = Object.entries(brandCounts).filter(([, n]) => n >= 3).map(([b]) => b);
+  if (confirmedBrandRejections.length) {
+    const existing = dna.brand_rejections ?? [];
+    const merged   = [...new Set([...existing, ...confirmedBrandRejections])].slice(0, 20);
+    dnaUpdates.brand_rejections = merged;
+  }
+
+  if (Object.keys(dnaUpdates).length > 0) {
+    await supabase.from('style_dna').update(dnaUpdates).eq('user_id', userId);
   }
 }

@@ -73,16 +73,31 @@ function inferStyle(name) {
   return null;
 }
 
+// Classify occasion string into season + formality signals
+function classifyOccasion(occasion) {
+  if (!occasion) return { isSummer: false, isWinter: false, isFormal: false, isAthletic: false };
+  const o = occasion.toLowerCase();
+  return {
+    isSummer:   /summer|warm|hot|italy|europe|tropical|beach|vacation|resort|travel|mediterranean|california|bali|miami|tulum/.test(o),
+    isWinter:   /winter|cold|snow|ski|freezing/.test(o),
+    isFormal:   /wedding|formal|black.?tie|gala|evening/.test(o),
+    isAthletic: /gym|workout|sport|athletic/.test(o),
+  };
+}
+
 /**
  * Scores a product against a user's Style DNA.
  * Returns a score 0-100 and a breakdown of contributing factors.
  * Products scoring 60+ pass to the outfit builder.
  * Products scoring 85+ are flagged as high-confidence picks.
  */
-export function scoreProductMatch(product, styleDna) {
-  if (!styleDna) return { score: 50, breakdown: [], confidence: 'low' };
+export function scoreProductMatch(product, styleDna, occasion = null) {
+  if (!styleDna) return { score: 40, breakdown: [], confidence: 'low' };
 
-  let score = 50;
+  // Sparse profiles get a lower base — items must earn their score rather than
+  // coasting through on a single color match from a thin DNA.
+  const isSparse = styleDna.overall_confidence_score === 'low' || styleDna.overall_confidence_score === 'medium';
+  let score = isSparse ? 42 : 50;
   const breakdown = [];
 
   const {
@@ -136,10 +151,14 @@ export function scoreProductMatch(product, styleDna) {
   }
 
   // ── Style category ─────────────────────────────────────────────
+  const rejectedStyles = [].concat(explicit_dislikes.styles ?? []);
   if (effectiveStyle && effectiveStyle === primary_style_category) {
     score += 20; breakdown.push({ factor: 'primary style match', delta: +20 });
   } else if (effectiveStyle && secondary_categories.includes(effectiveStyle)) {
     score += 10; breakdown.push({ factor: 'secondary style match', delta: +10 });
+  }
+  if (effectiveStyle && rejectedStyles.includes(effectiveStyle)) {
+    score -= 30; breakdown.push({ factor: 'style in rejected list', delta: -30 });
   }
 
   // ── Brand ──────────────────────────────────────────────────────
@@ -157,6 +176,42 @@ export function scoreProductMatch(product, styleDna) {
       score += 10; breakdown.push({ factor: 'price within typical range', delta: +10 });
     } else if (productPrice > typicalSpend * 2) {
       score -= 20; breakdown.push({ factor: 'price over typical spend', delta: -20 });
+    }
+  }
+
+  // ── Occasion / season scoring ──────────────────────────────────
+  const { isSummer, isWinter, isFormal, isAthletic } = classifyOccasion(occasion);
+  const n = productName.toLowerCase();
+
+  if (isSummer) {
+    // Heavy/warm items are wrong for summer — hard penalize
+    if (/hoodie|sweatshirt|puffer|parka|peacoat|overcoat|fleece|wool|flannel|sweater|knit|turtleneck|thermal|windbreaker|down jacket/.test(n)) {
+      score -= 35; breakdown.push({ factor: 'heavy item for summer/warm occasion', delta: -35 });
+    }
+    // Light/breathable items are ideal
+    if (/linen|cotton|chambray|seersucker|gauze|short.?sleeve|shorts|sandal|lightweight|breathable|airy|linen-blend/.test(n)) {
+      score += 15; breakdown.push({ factor: 'light item for summer/warm occasion', delta: +15 });
+    }
+  }
+
+  if (isWinter) {
+    if (/shorts|sandal|sleeveless|crop top|swimwear|swim|bikini/.test(n)) {
+      score -= 25; breakdown.push({ factor: 'too light for winter occasion', delta: -25 });
+    }
+    if (/wool|fleece|puffer|coat|knit|thermal|sweater|insulated/.test(n)) {
+      score += 10; breakdown.push({ factor: 'warm item for winter occasion', delta: +10 });
+    }
+  }
+
+  if (isFormal) {
+    if (/hoodie|sweatshirt|sneaker|flip.?flop|cargo|jogger|athletic|graphic tee/.test(n)) {
+      score -= 30; breakdown.push({ factor: 'too casual for formal occasion', delta: -30 });
+    }
+  }
+
+  if (isAthletic) {
+    if (/athletic|sport|gym|workout|performance|active|training/.test(n)) {
+      score += 15; breakdown.push({ factor: 'athletic item for workout occasion', delta: +15 });
     }
   }
 

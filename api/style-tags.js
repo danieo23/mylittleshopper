@@ -17,17 +17,27 @@ export default async function handler(req, res) {
 
   try {
     const response = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
+      model: 'claude-sonnet-4-6',
       max_tokens: 256,
       messages: [{
         role: 'user',
-        content: `A user described their personal style as: "${description}"
+        content: `A user described their personal style. Extract ALL tags that meaningfully appear in what they said — be generous, not conservative. A rich description should produce many tags.
 
-From this list of style tags: ${STYLE_TAGS.join(', ')}
+User said: "${description}"
 
-Return ONLY a JSON array of the most relevant matching tags (1-5 max). Only include tags that genuinely fit the description. Example: ["Minimal", "Quiet Luxury"]
+Available tags: ${STYLE_TAGS.join(', ')}
 
-If nothing fits, return: []`,
+Rules:
+- Include every tag that matches any part of the description, even partially
+- A mention of baggy jeans or cargos → Streetwear, Normcore
+- Darker colors + layering → Grunge
+- Graphic or vintage tees → Vintage, Streetwear
+- Button-downs + casual footwear → Coastal or Bohemian or Smart Casual
+- Can include up to 8 tags — use as many as fit
+- Only exclude tags that are completely absent from the description
+- Return ONLY a JSON array, no other text
+
+Example for a rich description: ["Streetwear", "Vintage", "Grunge", "Normcore", "Coastal"]`,
       }],
     });
 

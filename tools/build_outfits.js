@@ -1,13 +1,13 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { checkOutfitMultiplier } from './check_outfit_multiplier.js';
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, timeout: 25_000 });
+const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, timeout: 20_000 });
 
 /**
  * Takes scored products grouped by category and assembles 3-5 complete outfit sets.
  * Uses Claude to reason about combinations and generate style notes.
  */
-export async function buildOutfits({ scoredProducts, styleDna, wardrobeItems, budget, occasion }) {
+export async function buildOutfits({ scoredProducts, styleDna, wardrobeItems, budget, occasion, itemCounts = {}, userRequest = null, subtypeRequirements = {} }) {
   const productSummary = Object.entries(scoredProducts)
     .map(([cat, products]) =>
       `${cat.toUpperCase()}:\n` +
@@ -26,7 +26,23 @@ User Style DNA:
 - Aspiration gap: ${styleDna.aspiration_gap?.join(', ') || 'none identified'}
 ` : 'No Style DNA available — use general fashion principles.';
 
-  const prompt = `You are a personal stylist AI. Assemble 3 complete outfit combinations from these available products for a ${occasion ?? 'general'} occasion. Budget: $${budget}.
+  const hasSpecificRequest = Object.keys(itemCounts).length > 0 || Object.keys(subtypeRequirements).length > 0;
+  const outfitCount = hasSpecificRequest ? 1 : 3;
+
+  const countHints = Object.entries(itemCounts)
+    .filter(([, n]) => n > 1)
+    .map(([cat, n]) => `  - ${cat}: include exactly ${n} items`)
+    .join('\n');
+
+  const subtypeHints = Object.entries(subtypeRequirements)
+    .map(([cat, subtypes]) =>
+      `  - ${cat}: MUST include one item for each of these specific types: ${subtypes.join(' AND ')}`
+    )
+    .join('\n');
+
+  const prompt = `You are a personal stylist AI. Assemble ${outfitCount} complete outfit combination${outfitCount > 1 ? 's' : ''} from these available products for a ${occasion ?? 'general'} occasion. Budget: $${budget}.
+${userRequest ? `\nUSER ASKED FOR: "${userRequest}"\nOnly use products that match what the user asked for. If they asked for button-down shirts, only use items that are shirts/button-downs in the tops slot — never substitute hoodies or sweaters. If they asked for cargo pants, only cargo pants go in the bottoms slot. Honor the explicit request above all else.\n` : ''}
+${subtypeHints ? `\nSUBTYPE REQUIREMENTS — the outfit MUST contain one item of each listed type (non-negotiable):\n${subtypeHints}\nDo not pick two of the same subtype. If "cargo jeans AND baggy jeans" are required, one item must be cargo and a different item must be baggy.\n` : ''}
 
 ${dnaContext}
 
@@ -34,15 +50,21 @@ AVAILABLE PRODUCTS:
 ${productSummary}
 
 Rules:
-1. Each outfit must include at minimum: a top + bottom + shoes (or a dress + shoes)
+1. Build outfits from ONLY the categories provided. If tops + bottoms are available but no shoes, a top + bottom is a complete valid outfit — do NOT invent a third slot or repeat items to fill it. If shoes are in the product list, include them. Work strictly with what was searched.
 2. Total price of each outfit must be within $${budget}
 3. Each outfit should have a distinct color story — don't make three identical-palette looks
-4. Items must be internally coherent in formality (don't mix formalwear with athletic)
+4. Items must be internally coherent in formality
 5. At least one outfit should address the user's aspiration gap if one exists
+6. NEVER use the same product_name twice within a single outfit. Every item slot must be a unique product.
+7. STRICT ROTATION — Each product may appear in AT MOST ONE outfit. Outfit 1 gets products [A, D], Outfit 2 gets [B, E], Outfit 3 gets [C, F]. NEVER put the same product in 2 or more outfits when alternatives exist. This is the highest-priority rule for visual variety.${countHints ? `\nSpecific counts requested (all items go in the SINGLE outfit):\n${countHints}` : ''}
+
+Name each outfit after a specific lifestyle moment, vibe, or location — NOT generic aesthetic labels.
+Good names: "Afternoon in Venice Beach", "Coffee Run on Abbot Kinney", "Rooftop at Golden Hour", "Saturday at the Farmer's Market"
+Bad names: "Minimalist Look", "Smart Casual", "Classic Style"
 
 Return a JSON array of outfit objects. Each object:
 {
-  "outfit_name": "short evocative name",
+  "outfit_name": "specific lifestyle/location name",
   "items": [
     { "category": "top|bottom|shoes|outerwear|dress|accessory", "product_name": "exact name from the list above" }
   ],
@@ -54,7 +76,7 @@ Return a JSON array of outfit objects. Each object:
 Only return the JSON array. No other text.`;
 
   const response = await client.messages.create({
-    model:      'claude-haiku-4-5-20251001',
+    model:      'claude-sonnet-4-6',
     max_tokens: 2048,
     messages:   [{ role: 'user', content: prompt }],
   });
@@ -78,11 +100,29 @@ Only return the JSON array. No other text.`;
     return words.length > 0 && words.filter(w => a.includes(w)).length >= Math.min(2, words.length);
   }
 
+  // Track which products are used across ALL outfits for strict rotation enforcement
+  const usedAcrossOutfits = new Set();
+
   return outfits.map(outfit => {
+    const seenInThisOutfit = new Set();
+
     const resolvedItems = outfit.items.map(item => {
       const product = allProducts.find(p => matchProduct(p.name, item.product_name));
       return { ...item, product: product ?? null };
-    }).filter(i => i.product);
+    }).filter(i => {
+      if (!i.product) return false;
+      // Deduplicate within this outfit — same product name cannot appear twice
+      const key = (i.product.name ?? i.product_name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 50);
+      if (seenInThisOutfit.has(key)) return false;
+      seenInThisOutfit.add(key);
+      return true;
+    });
+
+    // Mark these products as used so later outfits rotate to different items
+    resolvedItems.forEach(i => {
+      const key = (i.product.name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 50);
+      usedAcrossOutfits.add(key);
+    });
 
     const newProducts = resolvedItems.map(i => i.product);
     const multipliers = newProducts.map(p => checkOutfitMultiplier(p, wardrobeItems ?? []));

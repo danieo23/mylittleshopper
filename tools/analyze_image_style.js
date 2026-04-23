@@ -67,7 +67,7 @@ export async function analyzeImageStyle(imageUrl, imageType = 'wardrobe') {
   const source = await buildImageSource(imageUrl);
 
   const response = await client.messages.create({
-    model:      'claude-haiku-4-5-20251001', // faster + cheaper for bulk image analysis
+    model:      'claude-sonnet-4-6',
     max_tokens: 1024,
     messages: [{
       role: 'user',
