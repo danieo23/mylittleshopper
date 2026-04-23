@@ -66,53 +66,84 @@ function ConversationItem({ conv, active, onClick, onDelete }) {
 
 // ─── Product card ────────────────────────────────────────────────────
 
-function ProductCard({ item, onReroll, onLike, onDislike }) {
-  const [imgFailed, setImgFailed] = useState(false);
+function ProductCard({ item, onReroll, onLike, onDislike, swapping }) {
+  const [imgIdx,   setImgIdx]   = useState(0);
   const [liked,    setLiked]    = useState(false);
   const [disliked, setDisliked] = useState(false);
-  const p = item.product ?? {};
-  const name  = p.name  ?? item.product_name ?? item.category ?? 'Item';
-  const price = p.price ?? item.price ?? null;
-  const store = p.store ?? null;
-  const img   = p.image_url ?? null;
-  const url   = p.product_url ?? null;
+  const p      = item.product ?? {};
+  const name   = p.name  ?? item.product_name ?? item.category ?? 'Item';
+  const price  = p.price ?? item.price ?? null;
+  const store  = p.store ?? null;
+  const url    = p.product_url ?? null;
+  const images = (p.all_images?.length ? p.all_images : (p.image_url ? [p.image_url] : [])).filter(Boolean);
+  const img    = images[imgIdx] ?? null;
 
-  const handleLike = () => {
-    if (liked) return;
-    setLiked(true);
-    setDisliked(false);
-    onLike?.();
-  };
-
-  const handleDislike = () => {
-    if (disliked) return;
-    setDisliked(true);
-    setLiked(false);
-    onDislike?.();
-  };
+  const handleLike = () => { if (liked) return; setLiked(true); setDisliked(false); onLike?.(); };
+  const handleDislike = () => { if (disliked) return; setDisliked(true); setLiked(false); onDislike?.(); };
 
   return (
-    <div className="w-44 shrink-0 flex flex-col border border-border bg-card snap-start">
+    <div className="w-56 shrink-0 flex flex-col border border-border bg-card snap-start relative">
+      {swapping && (
+        <div className="absolute inset-0 z-10 bg-background/75 flex items-center justify-center">
+          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+        </div>
+      )}
       {/* Image */}
       <div className="relative aspect-[3/4] bg-secondary overflow-hidden group">
-        {img && !imgFailed
+        {img
           ? <img
+              key={img}
               src={img}
               alt={name}
               className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-              onError={() => setImgFailed(true)}
+              onError={() => {
+                const next = images.findIndex((u, i) => i > imgIdx && u !== img);
+                if (next !== -1) setImgIdx(next);
+              }}
             />
           : <div className="w-full h-full flex flex-col items-center justify-center gap-2 px-3 text-center">
               <ShoppingBag className="w-8 h-8 text-muted-foreground/30" />
               {store && <span className="text-[9px] uppercase tracking-widest text-muted-foreground/50">{store}</span>}
             </div>
         }
+
+        {/* Multi-image dots */}
+        {images.length > 1 && (
+          <div className="absolute bottom-2 left-0 right-0 flex justify-center gap-1">
+            {images.map((_, i) => (
+              <button
+                key={i}
+                onClick={e => { e.preventDefault(); setImgIdx(i); }}
+                className={`w-1.5 h-1.5 rounded-full transition ${i === imgIdx ? 'bg-white' : 'bg-white/40'}`}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Prev/next image arrows */}
+        {images.length > 1 && (
+          <>
+            <button
+              onClick={e => { e.preventDefault(); setImgIdx(i => (i - 1 + images.length) % images.length); }}
+              className="absolute left-1 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center bg-black/30 hover:bg-black/50 transition opacity-0 group-hover:opacity-100"
+            >
+              <ChevronLeft className="w-3.5 h-3.5 text-white" />
+            </button>
+            <button
+              onClick={e => { e.preventDefault(); setImgIdx(i => (i + 1) % images.length); }}
+              className="absolute right-1 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center bg-black/30 hover:bg-black/50 transition opacity-0 group-hover:opacity-100"
+            >
+              <ChevronRight className="w-3.5 h-3.5 text-white" />
+            </button>
+          </>
+        )}
+
         {url && (
           <a
             href={url} target="_blank" rel="noopener noreferrer"
-            className="absolute inset-0 flex items-end justify-end p-2 bg-gradient-to-t from-black/40 to-transparent"
+            className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center bg-black/30 hover:bg-black/50 transition opacity-0 group-hover:opacity-100"
           >
-            <ExternalLink className="w-4 h-4 text-white drop-shadow" />
+            <ExternalLink className="w-3 h-3 text-white" />
           </a>
         )}
       </div>
@@ -125,33 +156,16 @@ function ProductCard({ item, onReroll, onLike, onDislike }) {
 
         {/* Actions */}
         <div className="flex items-center gap-px mt-1 pt-2 border-t border-border">
-          <button
-            onClick={onReroll}
-            title="Swap this item"
-            className="flex-1 flex items-center justify-center gap-1 py-1.5 text-[9px] uppercase tracking-wider text-muted-foreground hover:text-foreground hover:bg-secondary transition"
-          >
+          <button onClick={onReroll} title="Swap this item"
+            className="flex-1 flex items-center justify-center gap-1 py-1.5 text-[9px] uppercase tracking-wider text-muted-foreground hover:text-foreground hover:bg-secondary transition">
             <RefreshCw className="w-3 h-3" /> Swap
           </button>
-          <button
-            onClick={handleLike}
-            title="Love this"
-            className={`px-2 py-1.5 transition border-l border-border ${
-              liked
-                ? 'text-rose-500 bg-rose-500/10'
-                : 'text-muted-foreground hover:text-rose-500 hover:bg-rose-500/10'
-            }`}
-          >
+          <button onClick={handleLike} title="Love this"
+            className={`px-2 py-1.5 transition border-l border-border ${liked ? 'text-rose-500 bg-rose-500/10' : 'text-muted-foreground hover:text-rose-500 hover:bg-rose-500/10'}`}>
             <Heart className={`w-3 h-3 ${liked ? 'fill-current' : ''}`} />
           </button>
-          <button
-            onClick={handleDislike}
-            title="Not my style"
-            className={`px-2 py-1.5 transition border-l border-border ${
-              disliked
-                ? 'text-destructive bg-destructive/10'
-                : 'text-muted-foreground hover:text-destructive hover:bg-destructive/10'
-            }`}
-          >
+          <button onClick={handleDislike} title="Not my style"
+            className={`px-2 py-1.5 transition border-l border-border ${disliked ? 'text-destructive bg-destructive/10' : 'text-muted-foreground hover:text-destructive hover:bg-destructive/10'}`}>
             <ThumbsDown className="w-3 h-3" />
           </button>
         </div>
@@ -162,17 +176,14 @@ function ProductCard({ item, onReroll, onLike, onDislike }) {
 
 // ─── Outfit carousel ────────────────────────────────────────────────
 
-function OutfitCarousel({ outfits, onSendMessage, userId }) {
-  const [activeIdx, setActiveIdx] = useState(0);
+function OutfitCarousel({ outfits, userId, history }) {
+  // Show only the first outfit; items are mutable via silent swaps
+  const [items,    setItems]    = useState(() => outfits?.[0]?.items ?? []);
+  const [swapping, setSwapping] = useState(new Set());
   const scrollRef = useRef(null);
 
   if (!outfits?.length) return null;
-  const outfit = outfits[activeIdx];
-  const items  = outfit.items ?? [];
-
-  const scroll = (dir) => {
-    if (scrollRef.current) scrollRef.current.scrollBy({ left: dir * 188, behavior: 'smooth' });
-  };
+  const outfit = outfits[0];
 
   const sendFeedback = (signalType, item) => {
     if (!userId) return;
@@ -196,10 +207,35 @@ function OutfitCarousel({ outfits, onSendMessage, userId }) {
     }).catch(() => {});
   };
 
-  const handleReroll = (item) => {
-    const p    = item.product ?? {};
-    const name = p.name ?? item.product_name ?? item.category ?? 'that item';
-    onSendMessage(`Swap out the ${name} — find me a different option that fits the same look.`);
+  const handleReroll = async (item, itemIdx) => {
+    const p            = item.product ?? {};
+    const excludedName = p.name ?? item.product_name ?? '';
+    const category     = item.category ?? 'item';
+
+    setSwapping(prev => new Set([...prev, itemIdx]));
+    try {
+      const res  = await fetch('/api/agent', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message:             `Find me a different ${category} — same vibe and style as this outfit.`,
+          conversationHistory: history ?? [],
+          userId,
+          recentConversations: [],
+          excludeProductName:  excludedName,
+        }),
+      });
+      const data = await res.json();
+      const newOutfitItems = data.outfits?.[0]?.items ?? [];
+      const replacement = newOutfitItems.find(i => i.category === category && i.product?.name !== excludedName);
+      if (replacement?.product) {
+        setItems(prev => prev.map((it, i) => i === itemIdx ? replacement : it));
+      }
+    } catch (err) {
+      console.error('[swap]', err);
+    } finally {
+      setSwapping(prev => { const s = new Set(prev); s.delete(itemIdx); return s; });
+    }
   };
 
   const handleLike    = (item) => sendFeedback('approval',  item);
@@ -210,31 +246,10 @@ function OutfitCarousel({ outfits, onSendMessage, userId }) {
 
   return (
     <div className="mt-3 border border-border bg-card overflow-hidden">
-      {/* Outfit tabs */}
-      {outfits.length > 1 && (
-        <div className="flex border-b border-border overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
-          {outfits.map((o, i) => (
-            <button
-              key={i}
-              onClick={() => setActiveIdx(i)}
-              className={`shrink-0 px-4 py-2.5 text-[10px] uppercase tracking-wider border-b-2 transition -mb-px ${
-                activeIdx === i
-                  ? 'border-primary text-primary'
-                  : 'border-transparent text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              {o.outfit_name ?? `Look ${i + 1}`}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Outfit header */}
+      {/* Outfit header + total */}
       <div className="flex items-start justify-between px-4 pt-4 pb-2">
         <div className="min-w-0 flex-1 pr-4">
-          {outfits.length === 1 && outfit.outfit_name && (
-            <div className="font-serif text-xl text-foreground mb-0.5">{outfit.outfit_name}</div>
-          )}
+          <div className="font-serif text-xl text-foreground mb-0.5">{outfit.outfit_name ?? 'Your Look'}</div>
           {outfit.style_note && (
             <div className="text-xs text-muted-foreground leading-relaxed">{outfit.style_note}</div>
           )}
@@ -242,49 +257,37 @@ function OutfitCarousel({ outfits, onSendMessage, userId }) {
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground/50 mt-1">{outfit.occasion_fit}</div>
           )}
         </div>
-        {totalPrice > 0 && (
-          <div className="text-right shrink-0">
-            <div className="text-2xl font-semibold text-foreground">${totalPrice}</div>
-            {outfit.wardrobe_multiplier > 0 && (
-              <div className="text-[10px] text-muted-foreground mt-0.5">
-                pairs w/ {outfit.wardrobe_multiplier} wardrobe items
-              </div>
-            )}
-          </div>
-        )}
+        <div className="text-right shrink-0">
+          {totalPrice > 0 && (
+            <>
+              <div className="text-2xl font-semibold text-foreground">${totalPrice.toFixed(0)}</div>
+              <div className="text-[10px] text-muted-foreground mt-0.5">total</div>
+            </>
+          )}
+          {outfit.wardrobe_multiplier > 0 && (
+            <div className="text-[10px] text-muted-foreground mt-1">
+              pairs w/ {outfit.wardrobe_multiplier} owned
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Scrollable items */}
-      <div className="relative">
-        <button
-          onClick={() => scroll(-1)}
-          className="absolute left-1 top-1/2 -translate-y-1/2 z-10 w-7 h-7 flex items-center justify-center bg-background/90 border border-border shadow-sm hover:bg-secondary transition"
-        >
-          <ChevronLeft className="w-4 h-4" />
-        </button>
-
-        <div
-          ref={scrollRef}
-          className="flex gap-3 overflow-x-auto px-8 pb-4 pt-2 snap-x scroll-smooth"
-          style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-        >
-          {items.map((item, i) => (
-            <ProductCard
-              key={i}
-              item={item}
-              onReroll={() => handleReroll(item)}
-              onLike={() => handleLike(item)}
-              onDislike={() => handleDislike(item)}
-            />
-          ))}
-        </div>
-
-        <button
-          onClick={() => scroll(1)}
-          className="absolute right-1 top-1/2 -translate-y-1/2 z-10 w-7 h-7 flex items-center justify-center bg-background/90 border border-border shadow-sm hover:bg-secondary transition"
-        >
-          <ChevronRight className="w-4 h-4" />
-        </button>
+      <div
+        ref={scrollRef}
+        className="flex gap-3 overflow-x-auto px-4 pb-4 pt-2 snap-x scroll-smooth"
+        style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+      >
+        {items.map((item, i) => (
+          <ProductCard
+            key={`${item.product?.name ?? i}-${i}`}
+            item={item}
+            swapping={swapping.has(i)}
+            onReroll={() => handleReroll(item, i)}
+            onLike={() => handleLike(item)}
+            onDislike={() => handleDislike(item)}
+          />
+        ))}
       </div>
     </div>
   );
@@ -528,6 +531,12 @@ export default function Dashboard() {
       {/* ── Chat area ────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col min-w-0">
 
+        {/* Lychee header */}
+        <div className="shrink-0 px-6 py-4 border-b border-border flex items-center gap-2">
+          <span className="font-serif text-lg tracking-tight">Lychee</span>
+          <span className="text-[10px] text-muted-foreground uppercase tracking-wider">your stylist</span>
+        </div>
+
         {/* Empty state */}
         <AnimatePresence>
           {isEmpty && (
@@ -607,7 +616,7 @@ export default function Dashboard() {
                         </div>
                       )}
                       {msg.outfits && (
-                        <OutfitCarousel outfits={msg.outfits} onSendMessage={send} userId={userId} />
+                        <OutfitCarousel outfits={msg.outfits} userId={userId} history={history} />
                       )}
                     </div>
                   )}

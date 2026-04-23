@@ -50,7 +50,9 @@ export async function getUserProfile(userId) {
     wardrobeItems:      wardrobeItems ?? [],
     wallet:             wallet ?? { balance: 0 },
     // Flattened style-vault fields
-    sizes:              styleProfile?.sizes            ?? null,
+    gender:             styleProfile?.gender            ?? null,
+    ageRange:           styleProfile?.age_range         ?? null,
+    sizes:              styleProfile?.sizes             ?? null,
     favoriteStores:     styleProfile?.favorite_stores  ?? [],
     styleTags:          styleProfile?.style_tags       ?? [],
     pinterestBoardUrls: styleProfile?.pinterest_board_urls

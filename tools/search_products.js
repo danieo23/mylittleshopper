@@ -11,7 +11,7 @@
  *   SHOPPING_API_PROVIDER=serpapi   # or 'rapidapi'
  */
 
-const PROVIDER = process.env.SHOPPING_API_PROVIDER || 'serpapi';
+const PROVIDER = (process.env.SHOPPING_API_PROVIDER || 'serpapi').trim().toLowerCase();
 const API_KEY  = process.env.SHOPPING_API_KEY;
 
 /**
@@ -42,7 +42,7 @@ async function _searchViaSerpApi({ query, maxPrice }) {
   url.searchParams.set('api_key', API_KEY);
   if (maxPrice) url.searchParams.set('price_max', String(maxPrice));
 
-  const res  = await fetch(url.toString(), { signal: AbortSignal.timeout(20000) });
+  const res  = await fetch(url.toString(), { signal: AbortSignal.timeout(8000) });
   const data = await res.json();
 
   if (data.error) throw new Error(`SerpAPI error: ${data.error}`);
@@ -54,7 +54,8 @@ async function _searchViaSerpApi({ query, maxPrice }) {
       name:        p.title,
       price:       parseFloat(p.price.replace(/[^0-9.]/g, '')),
       store:       p.source,
-      image_url:   p.thumbnail,
+      image_url:        p.thumbnail,
+      all_images:       p.images?.length ? p.images : (p.thumbnail ? [p.thumbnail] : []),
       product_url: p.link,
       // Style attributes extracted later via analyze_image_style if needed
       colors:         null,

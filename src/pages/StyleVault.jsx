@@ -44,8 +44,14 @@ function ShoppablePinCard({ pin, onRemove, userId }) {
   const [fetching,    setFetching]    = useState(false);
   const [lensResults, setLensResults] = useState(pin.shopping_results ?? null);
 
-  // All products from Google Lens — shopping_results already merges shopping + visual
-  const products = lensResults?.shopping ?? [];
+  // All products from Google Lens — filter out videos, Pinterest links, social media
+  const NON_SHOP = ['youtube.com', 'youtu.be', 'vimeo.com', 'pinterest.com', 'pinterest.co',
+    'instagram.com', 'tiktok.com', 'twitter.com', 'x.com', 'threads.net', 'facebook.com', 'reddit.com'];
+  const products = (lensResults?.shopping ?? []).filter(p => {
+    const url = p.product_url ?? p.link ?? '';
+    try { const h = new URL(url).hostname.replace(/^www\./, ''); return !NON_SHOP.some(d => h === d || h.endsWith('.' + d)); }
+    catch { return false; }
+  });
   const hasShop  = products.length > 0;
 
   // Which item types Claude identified in the image — used to label sections
@@ -851,6 +857,62 @@ export default function StyleVault() {
           selected={profile.favorite_stores ?? []}
           onChange={handleStoresChange}
         />
+      </Section>
+
+      {/* Gender */}
+      <Section
+        title="Shopping for"
+        subtitle="Determines which section Lychee searches."
+      >
+        <div className="flex flex-wrap gap-2">
+          {[
+            { key: 'women',      label: 'Women' },
+            { key: 'men',        label: 'Men' },
+            { key: 'nonbinary',  label: 'Non-binary / Gender fluid' },
+            { key: 'prefer_not', label: 'Prefer not to say' },
+          ].map(opt => (
+            <button
+              key={opt.key}
+              onClick={() => saveProfile({ gender: opt.key })}
+              className={`px-4 py-2 border text-xs uppercase tracking-wider transition ${
+                (profile.gender ?? 'women') === opt.key
+                  ? 'border-primary text-primary'
+                  : 'border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </Section>
+
+      {/* Age range */}
+      <Section
+        title="Age range"
+        subtitle="Fills in style context when your profile is still building."
+      >
+        <div className="flex flex-wrap gap-2">
+          {[
+            { key: 'under_18', label: 'Under 18' },
+            { key: '18_24',    label: '18 – 24' },
+            { key: '25_34',    label: '25 – 34' },
+            { key: '35_44',    label: '35 – 44' },
+            { key: '45_54',    label: '45 – 54' },
+            { key: '55_plus',  label: '55+' },
+          ].map(opt => (
+            <button
+              key={opt.key}
+              onClick={() => saveProfile({ age_range: opt.key })}
+              className={`px-4 py-2 border text-xs uppercase tracking-wider transition ${
+                profile.age_range === opt.key
+                  ? 'border-primary text-primary'
+                  : 'border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
       </Section>
 
       {/* Sizes */}

@@ -1,5 +1,23 @@
 const API_KEY = process.env.SHOPPING_API_KEY;
 
+// Domains that return videos, social posts, or Pinterest pages — not buyable clothing
+const NON_SHOPPING_DOMAINS = [
+  'youtube.com', 'youtu.be', 'vimeo.com', 'dailymotion.com',
+  'pinterest.com', 'pinterest.co',
+  'instagram.com', 'tiktok.com', 'twitter.com', 'x.com',
+  'threads.net',
+  'facebook.com', 'reddit.com', 'tumblr.com', 'snapchat.com',
+  'lookbook.nu', 'polyvore.com', 'stylebook.com',
+];
+
+function isShoppableUrl(url) {
+  if (!url) return false;
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+    return !NON_SHOPPING_DOMAINS.some(d => host === d || host.endsWith('.' + d));
+  } catch { return false; }
+}
+
 /**
  * Runs a reverse image search using SerpAPI's Google Lens engine.
  * Merges both shopping_results and visual_matches into one products list —
@@ -43,15 +61,15 @@ export async function reverseImageSearch(imageUrl) {
     brand:       item.brand ?? null,
   })).filter(p => p.name && p.product_url);
 
-  // Visual matches — these almost always exist and also link to shoppable pages
-  const fromVisual = (data.visual_matches ?? []).slice(0, 20).map(m => ({
+  // Visual matches — filter to only buyable clothing pages (exclude videos, Pinterest, social media)
+  const fromVisual = (data.visual_matches ?? []).slice(0, 30).map(m => ({
     name:        m.title,
     price:       parsePrice(m.price),
     store:       m.source,
     product_url: m.link,
     image_url:   m.thumbnail,
     brand:       null,
-  })).filter(m => m.name && m.product_url);
+  })).filter(m => m.name && m.product_url && m.price && isShoppableUrl(m.product_url));
 
   // Merge: shopping first (de-duped against visual)
   const seen          = new Set(fromShopping.map(p => p.product_url));

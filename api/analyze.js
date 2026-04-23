@@ -90,7 +90,7 @@ async function analyzePinterest(userId, boardUrl) {
 
   let analyzed = 0;
   const uniqueImages = [...new Set(scraped.images.map(u => u.replace(/\/(?:474x|236x|originals)\//, '/736x/')))];
-  const toProcess = uniqueImages.slice(0, 6);
+  const toProcess = uniqueImages.slice(0, 20);
 
   await inBatches(toProcess, async (imageUrl) => {
     let styleResult = null;
@@ -122,7 +122,7 @@ async function analyzePinterest(userId, boardUrl) {
       shopping_results: null,
     });
     analyzed++;
-  }, 3);
+  }, 5);
 
   return {
     analyzed,

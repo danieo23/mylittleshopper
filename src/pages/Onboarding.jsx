@@ -4,20 +4,37 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { base44 } from '@/api/client';
 
+// Compress image to JPEG dataUrl for upload (same approach as StyleVault)
+async function compressImage(file) {
+  return new Promise((resolve, reject) => {
+    const img  = new Image();
+    const burl = URL.createObjectURL(file);
+    img.onload = () => {
+      const MAX = 900;
+      let { naturalWidth: w, naturalHeight: h } = img;
+      if (w > MAX || h > MAX) {
+        const r = Math.min(MAX / w, MAX / h);
+        w = Math.round(w * r); h = Math.round(h * r);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(burl);
+      canvas.toBlob(blob => {
+        const reader = new FileReader();
+        reader.onload  = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      }, 'image/jpeg', 0.82);
+    };
+    img.onerror = () => { URL.revokeObjectURL(burl); reject(new Error('Could not load image')); };
+    img.src = burl;
+  });
+}
+
 // ─── Data ─────────────────────────────────────────────────────────
 
-const BUDGET_OPTIONS = [
-  { key: 'low',  label: 'Budget',   desc: 'Depop, ThredUp, Shein, Burlington, H&M' },
-  { key: 'mid',  label: 'Mid-range', desc: 'Zara, ASOS, Pacsun, Urban Outfitters, Mango' },
-  { key: 'high', label: 'Premium',  desc: 'Revolve, Nordstrom, Net-a-Porter, Saks' },
-];
-
-const STORES = {
-  'Thrift & Budget': ['Depop', 'ThredUp', 'Poshmark', 'Shein', 'H&M', 'Primark', 'Burlington', 'Target Style', 'Boohoo', 'Walmart Fashion'],
-  'Mid-Range':       ['Zara', 'ASOS', 'Pacsun', 'Urban Outfitters', 'Mango', 'Uniqlo', 'Gap', 'Banana Republic', 'J.Crew', 'Anthropologie', 'Free People', 'Everlane', 'Abercrombie', 'American Eagle'],
-  'Premium':         ['Revolve', 'Nordstrom', 'Bloomingdale\'s', 'Net-a-Porter', 'Farfetch', 'Ssense', 'Saks Fifth Avenue'],
-  'Specialty':       ['Nike', 'Adidas', 'New Balance', 'Levi\'s', 'Carhartt', 'Reformation', 'Supreme', 'Palace'],
-};
+const BUDGET_PRESETS = [75, 150, 300, 500, 750, 1000];
 
 const STYLE_TAGS = [
   'Minimal', 'Streetwear', 'Old Money', 'Y2K', 'Preppy', 'Coastal', 'Techwear',
@@ -53,8 +70,24 @@ const PHOTO_CATEGORIES = [
   },
 ];
 
+const GENDER_OPTIONS = [
+  { key: 'women',     label: 'Women',                      desc: "Women's clothing & sizing" },
+  { key: 'men',       label: 'Men',                        desc: "Men's clothing & sizing" },
+  { key: 'nonbinary', label: 'Non-binary / Gender fluid',  desc: 'Mix of both or neither' },
+  { key: 'prefer_not', label: 'Prefer not to say',         desc: 'Shop across all sections' },
+];
+
+const AGE_RANGE_OPTIONS = [
+  { key: 'under_18', label: 'Under 18',  desc: 'Gen Z, trend-forward' },
+  { key: '18_24',    label: '18 – 24',   desc: 'Early style era, exploring' },
+  { key: '25_34',    label: '25 – 34',   desc: 'Style maturing, quality matters' },
+  { key: '35_44',    label: '35 – 44',   desc: 'Classic with a modern edge' },
+  { key: '45_54',    label: '45 – 54',   desc: 'Refined, timeless' },
+  { key: '55_plus',  label: '55 +',      desc: 'Quality and comfort first' },
+];
+
 // ─── Step labels ──────────────────────────────────────────────────
-const STEPS = ['Budget', 'Stores', 'Vibe', 'Colors', 'Photos', 'Details', 'Done'];
+const STEPS = ['Gender', 'Age', 'Budget', 'Stores', 'Vibe', 'Colors', 'Photos', 'Details', 'Done'];
 
 // ─── Stores dropdown (reused from StyleVault) ─────────────────────
 const ALL_STORES = [
@@ -157,8 +190,11 @@ export default function Onboarding() {
   const [uploads, setUploads] = useState({ wardrobe: [], outfit: [], inspo: [] });
   const [uploading, setUploading] = useState({});
 
+  const [uploadError, setUploadError] = useState('');
   const [data, setData] = useState({
-    budget_tier: '',
+    gender: '',
+    age_range: '',
+    budget: 200,
     favorite_stores: [],
     style_tags: [],
     color_palettes: [],
@@ -173,20 +209,24 @@ export default function Onboarding() {
 
   const handlePhotoUpload = async (category, files) => {
     if (!files.length) return;
+    setUploadError('');
     setUploading(u => ({ ...u, [category]: true }));
     try {
       const me = await base44.auth.me();
       for (const file of files) {
-        const { file_url } = await base44.integrations.Core.UploadFile({ file });
-        await base44.entities.WardrobeItem.create({
-          user_id: me.id,
-          image_url: file_url,
-          category,
+        const dataUrl = await compressImage(file);
+        const res  = await fetch('/api/upload-wardrobe', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ userId: me.id, category, dataUrl }),
         });
-        setUploads(u => ({ ...u, [category]: [...u[category], file_url] }));
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? 'Upload failed');
+        setUploads(u => ({ ...u, [category]: [...u[category], data.item?.image_url ?? dataUrl] }));
       }
     } catch (e) {
       console.error(e);
+      setUploadError(e.message ?? 'Upload failed — please try again.');
     } finally {
       setUploading(u => ({ ...u, [category]: false }));
     }
@@ -197,14 +237,18 @@ export default function Onboarding() {
 
   const saveProfile = async () => {
     const me = await base44.auth.me();
+    const boardUrl = data.pinterest_board_url.trim();
     await base44.entities.StyleProfile.create({
-      user_id:             me.id,
-      budget_tier:         data.budget_tier,
-      favorite_stores:     data.favorite_stores,
-      style_tags:          data.style_tags,
-      color_palettes:      data.color_palettes,
-      pinterest_board_url: data.pinterest_board_url || null,
-      sizes:               data.sizes,
+      user_id:               me.id,
+      gender:                data.gender || null,
+      age_range:             data.age_range || null,
+      budget_tier:           String(data.budget),
+      favorite_stores:       data.favorite_stores,
+      style_tags:            data.style_tags,
+      color_palettes:        data.color_palettes,
+      pinterest_board_url:   boardUrl || null,
+      pinterest_board_urls:  boardUrl ? [boardUrl] : [],
+      sizes:                 data.sizes,
     });
   };
 
@@ -273,16 +317,16 @@ export default function Onboarding() {
           className="w-full max-w-xl"
         >
 
-          {/* ── Step 0: Budget ── */}
+          {/* ── Step 0: Gender ── */}
           {step === 0 && (
             <div>
-              <h2 className="font-serif text-3xl tracking-tight mb-1">What's your budget range?</h2>
-              <p className="text-sm text-muted-foreground mb-8">Your shopper will prioritize stores in this range.</p>
+              <h2 className="font-serif text-3xl tracking-tight mb-1">Who are you shopping for?</h2>
+              <p className="text-sm text-muted-foreground mb-8">Helps your shopper search the right sections and find your size.</p>
               <div className="space-y-3">
-                {BUDGET_OPTIONS.map(opt => (
+                {GENDER_OPTIONS.map(opt => (
                   <button
                     key={opt.key}
-                    onClick={() => { setData(p => ({ ...p, budget_tier: opt.key })); next(); }}
+                    onClick={() => { setData(p => ({ ...p, gender: opt.key })); next(); }}
                     className="w-full flex items-center justify-between px-5 py-4 border border-border hover:border-foreground/40 transition text-left group"
                   >
                     <div>
@@ -296,8 +340,72 @@ export default function Onboarding() {
             </div>
           )}
 
-          {/* ── Step 1: Stores ── */}
+          {/* ── Step 1: Age ── */}
           {step === 1 && (
+            <div>
+              <h2 className="font-serif text-3xl tracking-tight mb-1">How old are you?</h2>
+              <p className="text-sm text-muted-foreground mb-8">Helps personalize recommendations — especially early on before your full style profile is built.</p>
+              <div className="space-y-3">
+                {AGE_RANGE_OPTIONS.map(opt => (
+                  <button
+                    key={opt.key}
+                    onClick={() => { setData(p => ({ ...p, age_range: opt.key })); next(); }}
+                    className="w-full flex items-center justify-between px-5 py-4 border border-border hover:border-foreground/40 transition text-left group"
+                  >
+                    <div>
+                      <div className="text-sm font-medium text-foreground">{opt.label}</div>
+                      <div className="text-xs text-muted-foreground mt-0.5">{opt.desc}</div>
+                    </div>
+                    <ArrowRight className="w-4 h-4 text-muted-foreground group-hover:text-foreground transition" />
+                  </button>
+                ))}
+              </div>
+              <button onClick={next} className="mt-6 text-xs text-muted-foreground hover:text-foreground transition">
+                Prefer not to say
+              </button>
+            </div>
+          )}
+
+          {/* ── Step 2: Budget ── */}
+          {step === 2 && (
+            <div>
+              <h2 className="font-serif text-3xl tracking-tight mb-1">What's your budget?</h2>
+              <p className="text-sm text-muted-foreground mb-10">How much do you want to spend per outfit? You can always say a specific amount in chat — this is just your default.</p>
+              <div className="px-2 mb-10">
+                <div className="text-center mb-8">
+                  <span className="font-serif text-6xl tracking-tight">${data.budget}</span>
+                  <span className="text-muted-foreground text-sm ml-2">per outfit</span>
+                </div>
+                <input
+                  type="range"
+                  min={50}
+                  max={1000}
+                  step={25}
+                  value={data.budget}
+                  onChange={e => setData(p => ({ ...p, budget: Number(e.target.value) }))}
+                  className="w-full accent-primary cursor-pointer"
+                />
+                <div className="flex justify-between mt-2 text-xs text-muted-foreground">
+                  <span>$50</span>
+                  <div className="flex gap-3">
+                    {BUDGET_PRESETS.map(v => (
+                      <button key={v} onClick={() => setData(p => ({ ...p, budget: v }))}
+                        className={`text-[10px] uppercase tracking-wider transition ${data.budget === v ? 'text-primary' : 'text-muted-foreground/40 hover:text-muted-foreground'}`}>
+                        ${v}
+                      </button>
+                    ))}
+                  </div>
+                  <span>$1,000</span>
+                </div>
+              </div>
+              <button onClick={next} className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 text-sm hover:opacity-90 transition">
+                Continue <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {/* ── Step 3: Stores ── */}
+          {step === 3 && (
             <div>
               <h2 className="font-serif text-3xl tracking-tight mb-1">Favorite stores?</h2>
               <p className="text-sm text-muted-foreground mb-8">Pick every store you shop at or would like to. Your shopper checks these first.</p>
@@ -313,8 +421,8 @@ export default function Onboarding() {
             </div>
           )}
 
-          {/* ── Step 2: Style vibe ── */}
-          {step === 2 && (
+          {/* ── Step 4: Style vibe ── */}
+          {step === 4 && (
             <div>
               <h2 className="font-serif text-3xl tracking-tight mb-1">What's your vibe?</h2>
               <p className="text-sm text-muted-foreground mb-8">Pick everything that feels like you. The more you select the better your shopper knows you.</p>
@@ -325,8 +433,8 @@ export default function Onboarding() {
             </div>
           )}
 
-          {/* ── Step 3: Colors ── */}
-          {step === 3 && (
+          {/* ── Step 5: Colors ── */}
+          {step === 5 && (
             <div>
               <h2 className="font-serif text-3xl tracking-tight mb-1">Color preferences?</h2>
               <p className="text-sm text-muted-foreground mb-8">Which palettes show up most in your wardrobe?</p>
@@ -355,14 +463,17 @@ export default function Onboarding() {
             </div>
           )}
 
-          {/* ── Step 4: Photo uploads ── */}
-          {step === 4 && (
+          {/* ── Step 6: Photo uploads ── */}
+          {step === 6 && (
             <div>
               <h2 className="font-serif text-3xl tracking-tight mb-1">Show your shopper your style.</h2>
               <p className="text-sm text-muted-foreground mb-2">
                 This is the most powerful step. Upload as many photos as you can — the more your shopper sees, the better it knows your taste.
               </p>
               <p className="text-xs text-primary mb-8 uppercase tracking-wider">More photos = smarter picks</p>
+              {uploadError && (
+                <p className="mb-4 text-xs text-destructive">{uploadError}</p>
+              )}
               <div className="space-y-8 mb-8">
                 {PHOTO_CATEGORIES.map(cat => (
                   <div key={cat.key}>
@@ -419,8 +530,8 @@ export default function Onboarding() {
             </div>
           )}
 
-          {/* ── Step 5: Optional details ── */}
-          {step === 5 && (
+          {/* ── Step 7: Optional details ── */}
+          {step === 7 && (
             <div>
               <h2 className="font-serif text-3xl tracking-tight mb-1">A few last details.</h2>
               <p className="text-sm text-muted-foreground mb-8">Optional — but the more your shopper knows, the better the fit.</p>
@@ -466,8 +577,8 @@ export default function Onboarding() {
             </div>
           )}
 
-          {/* ── Step 6: Done / Quiz entry ── */}
-          {step === 6 && (
+          {/* ── Step 8: Done / Quiz entry ── */}
+          {step === 8 && (
             <div className="text-center py-8">
               <div className="w-16 h-16 rounded-full bg-primary/10 border border-primary/30 flex items-center justify-center mx-auto mb-6">
                 <Check className="w-7 h-7 text-primary" />
