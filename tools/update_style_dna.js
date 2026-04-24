@@ -37,28 +37,41 @@ export async function updateStyleDna(userId, signalType, itemAttributes, swapTar
   // 3. Apply signal logic
   if (signalType === 'rejection' || signalType === 'post_delivery_negative') {
     const dislikes = { ...(dna.explicit_dislikes ?? {}) };
+    const counts   = { ...(dislikes.counts ?? { brands: {}, colors: {}, fits: {}, styles: {} }) };
+    counts.brands  = { ...(counts.brands  ?? {}) };
+    counts.colors  = { ...(counts.colors  ?? {}) };
+    counts.fits    = { ...(counts.fits    ?? {}) };
+    counts.styles  = { ...(counts.styles  ?? {}) };
 
-    // Track avoided colors
-    if (itemAttributes.colors?.length) {
-      const avoided = [...(dna.avoided_colors ?? [])];
-      for (const color of itemAttributes.colors) avoided.push(color);
-      updates.avoided_colors = [...new Set(avoided)].slice(0, 10);
-    }
-
-    // Track rejected fits
-    if (itemAttributes.fit_type) {
-      dislikes.fits = [...new Set([...(dislikes.fits ?? []), itemAttributes.fit_type])];
-    }
-
-    // Track rejected style categories
-    if (itemAttributes.style_category) {
-      dislikes.styles = [...new Set([...(dislikes.styles ?? []), itemAttributes.style_category])];
-    }
-
-    updates.explicit_dislikes = dislikes;
-
-    // Track rejected brands
+    // Increment frequency count for each disliked attribute
     if (itemAttributes.brand) {
+      counts.brands[itemAttributes.brand] = (counts.brands[itemAttributes.brand] ?? 0) + 1;
+    }
+    if (itemAttributes.fit_type) {
+      counts.fits[itemAttributes.fit_type] = (counts.fits[itemAttributes.fit_type] ?? 0) + 1;
+      // Hard-reject after 2 dislikes on the same fit
+      if (counts.fits[itemAttributes.fit_type] >= 2) {
+        dislikes.fits = [...new Set([...(dislikes.fits ?? []), itemAttributes.fit_type])];
+      }
+    }
+    if (itemAttributes.style_category) {
+      counts.styles[itemAttributes.style_category] = (counts.styles[itemAttributes.style_category] ?? 0) + 1;
+      if (counts.styles[itemAttributes.style_category] >= 2) {
+        dislikes.styles = [...new Set([...(dislikes.styles ?? []), itemAttributes.style_category])];
+      }
+    }
+    for (const color of (itemAttributes.colors ?? [])) {
+      counts.colors[color] = (counts.colors[color] ?? 0) + 1;
+      // Only move a color to avoided_colors after 2 dislikes — one blue shirt ≠ hate all blue
+      if (counts.colors[color] >= 2) {
+        const avoided = [...(dna.avoided_colors ?? [])];
+        if (!avoided.includes(color)) avoided.push(color);
+        updates.avoided_colors = [...new Set(avoided)].slice(0, 10);
+      }
+    }
+
+    // Hard brand rejection after 3 dislikes (promoted by _promoteConfirmedPreferences anyway)
+    if (itemAttributes.brand && counts.brands[itemAttributes.brand] >= 3) {
       const rejections = dna.brand_rejections ?? [];
       if (!rejections.includes(itemAttributes.brand)) {
         updates.brand_rejections = [...rejections, itemAttributes.brand].slice(0, 20);
@@ -69,8 +82,10 @@ export async function updateStyleDna(userId, signalType, itemAttributes, swapTar
     if (itemAttributes.name) {
       const dislikedNames = [...(dislikes.product_names ?? []), itemAttributes.name];
       dislikes.product_names = [...new Set(dislikedNames)].slice(0, 100);
-      updates.explicit_dislikes = dislikes;
     }
+
+    dislikes.counts = counts;
+    updates.explicit_dislikes = dislikes;
   }
 
   if (signalType === 'approval' || signalType === 'post_delivery_positive') {

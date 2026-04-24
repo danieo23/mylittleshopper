@@ -132,6 +132,8 @@ export function scoreProductMatch(product, styleDna, occasion = null) {
     ? product.colors.map(hexToBucket).filter(Boolean)
     : extractTitleColors(productName);
 
+  const dislikeCounts = explicit_dislikes.counts ?? {};
+
   // ── Color scoring ──────────────────────────────────────────────
   const inPrimary   = productColorBuckets.some(c => dnaPrimaryBuckets.includes(c));
   const inSecondary = productColorBuckets.some(c => dnaSecondaryBuckets.includes(c));
@@ -141,6 +143,12 @@ export function scoreProductMatch(product, styleDna, occasion = null) {
   if (inSecondary) { score += 15; breakdown.push({ factor: 'secondary color match', delta: +15 }); }
   if (inAvoided)   { score -= 40; breakdown.push({ factor: 'avoided color',          delta: -40 }); }
 
+  // Gradient color penalty from dislike frequency (before the hard avoided threshold)
+  if (!inAvoided) {
+    const maxColorDislikes = Math.max(0, ...productColorBuckets.map(c => dislikeCounts.colors?.[c] ?? 0));
+    if (maxColorDislikes === 1) { score -= 12; breakdown.push({ factor: 'color disliked once',  delta: -12 }); }
+  }
+
   // ── Fit scoring ────────────────────────────────────────────────
   const rejectedFits = [].concat(explicit_dislikes.fits ?? []);
   if (dominant_fit && effectiveFit === dominant_fit) {
@@ -148,6 +156,10 @@ export function scoreProductMatch(product, styleDna, occasion = null) {
   }
   if (effectiveFit && rejectedFits.includes(effectiveFit)) {
     score -= 35; breakdown.push({ factor: 'fit is in rejected list', delta: -35 });
+  } else if (effectiveFit) {
+    // Gradient: first dislike on a fit = soft penalty before it graduates to the hard list
+    const fitCount = dislikeCounts.fits?.[effectiveFit] ?? 0;
+    if (fitCount === 1) { score -= 15; breakdown.push({ factor: 'fit disliked once', delta: -15 }); }
   }
 
   // ── Style category ─────────────────────────────────────────────
@@ -159,6 +171,9 @@ export function scoreProductMatch(product, styleDna, occasion = null) {
   }
   if (effectiveStyle && rejectedStyles.includes(effectiveStyle)) {
     score -= 30; breakdown.push({ factor: 'style in rejected list', delta: -30 });
+  } else if (effectiveStyle) {
+    const styleCount = dislikeCounts.styles?.[effectiveStyle] ?? 0;
+    if (styleCount === 1) { score -= 12; breakdown.push({ factor: 'style disliked once', delta: -12 }); }
   }
 
   // ── Brand ──────────────────────────────────────────────────────
@@ -167,6 +182,11 @@ export function scoreProductMatch(product, styleDna, occasion = null) {
   }
   if (productBrand && brand_rejections.includes(productBrand)) {
     score -= 20; breakdown.push({ factor: 'brand rejection', delta: -20 });
+  } else if (productBrand) {
+    // Gradient brand penalty: each dislike nudges score down before hard rejection kicks in
+    const brandCount = dislikeCounts.brands?.[productBrand] ?? 0;
+    if (brandCount === 1) { score -= 8;  breakdown.push({ factor: 'brand disliked once',  delta: -8  }); }
+    if (brandCount === 2) { score -= 16; breakdown.push({ factor: 'brand disliked twice', delta: -16 }); }
   }
 
   // ── Price ──────────────────────────────────────────────────────
