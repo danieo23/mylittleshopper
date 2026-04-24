@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ArrowRight, ShoppingBag, Loader2, Trash2, RefreshCw, ThumbsDown, Heart, ExternalLink, ChevronLeft, ChevronRight, Plus, X, MessageSquare } from 'lucide-react';
+import { ArrowRight, ShoppingBag, Loader2, Trash2, RefreshCw, ThumbsDown, Heart, ExternalLink, ChevronLeft, ChevronRight, Plus, X, MessageSquare, Check, Bookmark } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { supabase } from '@/api/client';
 
@@ -314,6 +314,188 @@ function OutfitCarousel({ outfits, userId, history }) {
   );
 }
 
+// ─── Wardrobe redo layout ────────────────────────────────────────────
+
+const REDO_CATEGORIES = [
+  { key: 'outerwear', label: 'Outerwear'  },
+  { key: 'top',       label: 'Tops'       },
+  { key: 'bottom',    label: 'Bottoms'    },
+  { key: 'shoes',     label: 'Shoes'      },
+  { key: 'accessory', label: 'Accessories'},
+  { key: 'dress',     label: 'Dresses'    },
+];
+
+function SelectableCard({ item, selected, onToggle }) {
+  const [imgIdx, setImgIdx] = useState(0);
+  const p      = item.product ?? {};
+  const name   = p.name  ?? item.product_name ?? item.category ?? 'Item';
+  const price  = p.price ?? null;
+  const store  = p.store ?? null;
+  const url    = p.product_url ?? null;
+  const images = (p.all_images?.length ? p.all_images : (p.image_url ? [p.image_url] : [])).filter(Boolean);
+  const img    = images[imgIdx] ?? null;
+
+  return (
+    <div
+      className={`w-44 shrink-0 flex flex-col border bg-card snap-start relative cursor-pointer transition-all ${
+        selected ? 'border-primary ring-1 ring-primary' : 'border-border hover:border-foreground/30'
+      }`}
+      onClick={onToggle}
+    >
+      {/* Selected checkmark */}
+      {selected && (
+        <div className="absolute top-2 left-2 z-10 w-6 h-6 rounded-full bg-primary flex items-center justify-center">
+          <Check className="w-3.5 h-3.5 text-primary-foreground" />
+        </div>
+      )}
+
+      {/* Image */}
+      <a
+        href={url ?? undefined} target="_blank" rel="noopener noreferrer"
+        onClick={e => { if (!url) e.preventDefault(); e.stopPropagation(); }}
+        className={`relative aspect-[3/4] bg-secondary overflow-hidden block group ${url ? 'cursor-pointer' : 'cursor-default'}`}
+      >
+        {img
+          ? <img key={img} src={img} alt={name}
+              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+              onError={() => { const next = images.findIndex((u, i) => i > imgIdx && u !== img); if (next !== -1) setImgIdx(next); }}
+            />
+          : <div className="w-full h-full flex items-center justify-center">
+              <ShoppingBag className="w-6 h-6 text-muted-foreground/30" />
+            </div>
+        }
+        {url && (
+          <div className="absolute inset-x-0 bottom-0 py-1.5 bg-black/60 flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <ExternalLink className="w-3 h-3 text-white" />
+            <span className="text-[9px] uppercase tracking-widest text-white">Shop</span>
+          </div>
+        )}
+        {images.length > 1 && (
+          <>
+            <button onClick={e => { e.stopPropagation(); e.preventDefault(); setImgIdx(i => (i - 1 + images.length) % images.length); }}
+              className="absolute left-1 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center bg-black/40 hover:bg-black/60 transition">
+              <ChevronLeft className="w-3 h-3 text-white" />
+            </button>
+            <button onClick={e => { e.stopPropagation(); e.preventDefault(); setImgIdx(i => (i + 1) % images.length); }}
+              className="absolute right-1 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center bg-black/40 hover:bg-black/60 transition">
+              <ChevronRight className="w-3 h-3 text-white" />
+            </button>
+          </>
+        )}
+      </a>
+
+      {/* Info + save toggle */}
+      <div className="p-2.5 flex flex-col gap-1 flex-1">
+        {store && <div className="text-[8px] uppercase tracking-widest text-muted-foreground truncate">{store}</div>}
+        <div className="text-[11px] text-foreground leading-snug line-clamp-2 flex-1">{name}</div>
+        <div className="flex items-center justify-between mt-1">
+          {price != null && <span className="text-xs font-semibold">${price}</span>}
+          <button
+            onClick={e => { e.stopPropagation(); onToggle(); }}
+            className={`ml-auto flex items-center gap-1 text-[9px] uppercase tracking-wider px-2 py-1 transition border ${
+              selected
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'text-muted-foreground border-border hover:border-primary hover:text-primary'
+            }`}
+          >
+            <Bookmark className="w-2.5 h-2.5" />
+            {selected ? 'Saved' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WardrobeRedoLayout({ outfits }) {
+  const [saved, setSaved] = useState(new Set());
+
+  const allItems = (outfits ?? []).flatMap(o => o.items ?? []);
+
+  // Group by category in the prescribed body order
+  const grouped = REDO_CATEGORIES
+    .map(cat => ({
+      ...cat,
+      items: allItems.filter(item => (item.category ?? '').toLowerCase() === cat.key),
+    }))
+    .filter(g => g.items.length > 0);
+
+  const toggle = (key) => setSaved(prev => {
+    const next = new Set(prev);
+    next.has(key) ? next.delete(key) : next.add(key);
+    return next;
+  });
+
+  const savedItems = [...saved].map(key => {
+    const [cat, idx] = key.split('::');
+    return grouped.find(g => g.key === cat)?.items[parseInt(idx)];
+  }).filter(Boolean);
+
+  return (
+    <div className="mt-3 space-y-6">
+      {grouped.map(group => (
+        <div key={group.key}>
+          {/* Category header */}
+          <div className="flex items-baseline gap-2 px-1 mb-2">
+            <span className="font-serif text-base text-foreground">{group.label}</span>
+            <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
+              {group.items.length} options
+            </span>
+          </div>
+
+          {/* Horizontal scroll row */}
+          <div
+            className="flex gap-2.5 overflow-x-auto pb-2 snap-x scroll-smooth"
+            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+          >
+            {group.items.map((item, i) => {
+              const key = `${group.key}::${i}`;
+              return (
+                <SelectableCard
+                  key={key}
+                  item={item}
+                  selected={saved.has(key)}
+                  onToggle={() => toggle(key)}
+                />
+              );
+            })}
+          </div>
+        </div>
+      ))}
+
+      {/* Saved summary */}
+      {savedItems.length > 0 && (
+        <div className="border border-primary/30 bg-primary/5 p-4 mt-4">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm font-medium text-foreground">
+              {savedItems.length} item{savedItems.length !== 1 ? 's' : ''} saved
+            </span>
+            <span className="text-xs text-muted-foreground">
+              ${savedItems.reduce((s, i) => s + (i.product?.price ?? 0), 0).toFixed(0)} total
+            </span>
+          </div>
+          <div className="flex gap-2 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
+            {savedItems.map((item, i) => {
+              const p = item.product ?? {};
+              const img = p.all_images?.[0] ?? p.image_url ?? null;
+              return (
+                <div key={i} className="shrink-0 w-12 h-12 border border-border overflow-hidden bg-secondary">
+                  {img
+                    ? <img src={img} alt={p.name} className="w-full h-full object-cover" />
+                    : <div className="w-full h-full flex items-center justify-center">
+                        <ShoppingBag className="w-4 h-4 text-muted-foreground/30" />
+                      </div>
+                  }
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main component ──────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -494,12 +676,12 @@ export default function Dashboard() {
       setLoading(false);
 
       const replyText = data.reply || (data.outfits ? '' : 'Something went wrong — please try again.');
-      const aiMsg     = { role: 'ai', text: replyText, outfits: data.outfits ?? null, choices: data.choices ?? null };
+      const aiMsg     = { role: 'ai', text: replyText, outfits: data.outfits ?? null, wardrobeRedo: data.wardrobeRedo ?? false, choices: data.choices ?? null };
 
       setMessages(prev => {
         const fullMsgs = [...prev, aiMsg];
         saveConversation(fullMsgs, data.history, currentConvId);
-        return [...prev, { role: 'ai', text: '', outfits: data.outfits ?? null }];
+        return [...prev, { role: 'ai', text: '', outfits: data.outfits ?? null, wardrobeRedo: data.wardrobeRedo ?? false }];
       });
 
       animateLastMessage(replyText);
@@ -637,7 +819,9 @@ export default function Dashboard() {
                         </div>
                       )}
                       {msg.outfits && (
-                        <OutfitCarousel outfits={msg.outfits} userId={userId} history={history} />
+                        msg.wardrobeRedo
+                          ? <WardrobeRedoLayout outfits={msg.outfits} />
+                          : <OutfitCarousel outfits={msg.outfits} userId={userId} history={history} />
                       )}
                     </div>
                   )}

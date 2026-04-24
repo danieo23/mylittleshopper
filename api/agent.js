@@ -372,6 +372,40 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget, refinemen
 }
 
 /**
+ * Build slots for a full wardrobe redo — one per major category,
+ * all in show_options mode so the pool is maximally wide.
+ * DNA and occasion drive which specific sub-types to include.
+ */
+function buildWardrobeRedoSlots(dna, occasion) {
+  const fit   = dna?.dominant_fit         ?? 'relaxed';
+  const style = dna?.primary_style_category ?? '';
+  const isSummer = /summer|beach|warm|tropical/i.test(occasion ?? '');
+  let idx = 0;
+  const mk = (key) => ({ ...SLOT_DEFS[key], id: `redo_${idx++}`, show_options: true });
+
+  const slots = [];
+
+  // Tops — always two top slots for variety
+  slots.push(mk('generic_top'));
+  if (/streetwear|grunge|skate/i.test(style)) slots.push(mk('graphic_tee'));
+  else                                          slots.push(mk('oversized_tee'));
+
+  // Bottoms — fit-driven, plus shorts for warm weather
+  if      (fit === 'slim' || fit === 'fitted')            slots.push(mk('slim_jeans'));
+  else if (fit === 'oversized' || fit === 'relaxed')       slots.push(mk('baggy_jeans'));
+  else                                                     slots.push(mk('straight_jeans'));
+  if (isSummer) slots.push(mk('shorts'));
+
+  // Shoes
+  slots.push(mk('sneakers'));
+
+  // Outerwear — skip for summer
+  if (!isSummer) slots.push(mk('jacket'));
+
+  return slots;
+}
+
+/**
  * Build a deterministic product card from filled slots.
  *
  * Explicit count (user said "2 graphic tees"):
@@ -381,8 +415,11 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget, refinemen
  *   → show_options = true → show top 4 options for that slot so the user
  *     can browse. This gives 5-10 total items for a typical multi-category
  *     request without a count ("summer clothes" → tees x4 + shorts x4).
+ *
+ * maxPerSlot overrides show_options pick count — used for wardrobe redo
+ * to surface as many options as possible per category row.
  */
-function buildShoppingBoard(requiredSlots, slotCache) {
+function buildShoppingBoard(requiredSlots, slotCache, maxPerSlot = null) {
   const catLabel = { tops: 'top', bottoms: 'bottom', shoes: 'shoes', outerwear: 'outerwear', dress: 'dress', accessories: 'accessory' };
   const usedNames = new Set();
   const nameKey   = name => (name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40);
@@ -390,7 +427,8 @@ function buildShoppingBoard(requiredSlots, slotCache) {
 
   for (const slot of requiredSlots) {
     const pool  = (slotCache[slot.id] ?? []).filter(p => !usedNames.has(nameKey(p.name)));
-    const picks = slot.show_options ? pool.slice(0, 4) : pool.slice(0, 1);
+    const picks = maxPerSlot ? pool.slice(0, maxPerSlot) :
+                  slot.show_options ? pool.slice(0, 4) : pool.slice(0, 1);
 
     for (const p of picks) {
       usedNames.add(nameKey(p.name));
@@ -1043,6 +1081,35 @@ async function runAgent(message, conversationHistory, userId, recentConversation
   // Vague requests (no named items) fall through to the agent loop.
   const requiredSlots = parseRequestSlots(userText);
   console.log(`[slots] parsed ${requiredSlots.length} slots:`, requiredSlots.map(s => `${s.id}(${s.label})`).join(', ') || 'none (vague request)');
+
+  // ── WARDROBE REDO PATH ────────────────────────────────────────────
+  // Triggered when the user wants a full wardrobe refresh/overhaul.
+  // Runs broad searches across all major categories, returns many
+  // options per category for the browsable redo layout in the UI.
+  const isWardrobeRedo = /\b(redo|revamp|refresh|overhaul|rebuild|replace|redo)\b.{0,40}\bwardrobe\b|\bwardrobe\b.{0,40}\b(redo|revamp|refresh|overhaul|rebuild)\b|\b(new|whole|full|entire|complete)\s+wardrobe\b|\bwardrobe\s+(for|this)\s+(summer|fall|winter|spring|season)\b/i.test(message);
+
+  if (isWardrobeRedo) {
+    const budget    = userProfile.wallet?.balance ?? 500;
+    const redoSlots = buildWardrobeRedoSlots(userProfile.styleDna, occasion);
+    const slotCache = await fillSlots(redoSlots, userProfile, occasion, budget);
+    const outfits   = buildShoppingBoard(redoSlots, slotCache, 10);
+    await enrichProductImages(outfits);
+
+    const catSummary = redoSlots
+      .filter(s => slotCache[s.id]?.length)
+      .map(s => `${s.label} (${slotCache[s.id].length} options)`)
+      .join(', ');
+
+    const ctxMsg = `[Wardrobe redo complete. Found: ${catSummary}. The UI shows a category-by-category browsable layout where the user can select favourites. Reply in 1–2 sentences — acknowledge this is a full refresh and briefly describe the aesthetic direction you searched in based on their DNA. Plain text only.]`;
+    const replyResp = await client.messages.create({
+      model:      LOOP_MODEL,
+      max_tokens: 256,
+      system:     buildSystemPrompt(userProfile, recentConversations),
+      messages:   [...conversationHistory, { role: 'user', content: message }, { role: 'user', content: ctxMsg }],
+    });
+    const { reply, choices } = parseChoices(replyResp.content.find(b => b.type === 'text')?.text ?? '');
+    return { reply, history: messages, outfits, wardrobeRedo: true, choices };
+  }
 
   // ── REFINEMENT PATH ───────────────────────────────────────────────
   // When the user is giving feedback on prior results (no new item request
