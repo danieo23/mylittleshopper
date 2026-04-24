@@ -88,8 +88,14 @@ function ProductCard({ item, onReroll, onLike, onDislike, swapping }) {
           <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
         </div>
       )}
-      {/* Image */}
-      <div className="relative aspect-[3/4] bg-secondary overflow-hidden group">
+      {/* Image — full area is a link when URL is available */}
+      <a
+        href={url ?? undefined}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={e => !url && e.preventDefault()}
+        className={`relative aspect-[3/4] bg-secondary overflow-hidden block group ${url ? 'cursor-pointer' : 'cursor-default'}`}
+      >
         {img
           ? <img
               key={img}
@@ -107,51 +113,53 @@ function ProductCard({ item, onReroll, onLike, onDislike, swapping }) {
             </div>
         }
 
+        {/* Shop now overlay on hover */}
+        {url && (
+          <div className="absolute inset-x-0 bottom-0 py-2 bg-black/60 flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <ExternalLink className="w-3 h-3 text-white" />
+            <span className="text-[9px] uppercase tracking-widest text-white font-medium">Shop now</span>
+          </div>
+        )}
+
         {/* Multi-image dots */}
         {images.length > 1 && (
-          <div className="absolute bottom-2 left-0 right-0 flex justify-center gap-1">
+          <div className="absolute bottom-8 left-0 right-0 flex justify-center gap-1">
             {images.map((_, i) => (
               <button
                 key={i}
-                onClick={e => { e.preventDefault(); setImgIdx(i); }}
+                onClick={e => { e.stopPropagation(); e.preventDefault(); setImgIdx(i); }}
                 className={`w-1.5 h-1.5 rounded-full transition ${i === imgIdx ? 'bg-white' : 'bg-white/40'}`}
               />
             ))}
           </div>
         )}
 
-        {/* Prev/next image arrows — always visible when multiple images */}
+        {/* Prev/next image arrows */}
         {images.length > 1 && (
           <>
             <button
-              onClick={e => { e.preventDefault(); setImgIdx(i => (i - 1 + images.length) % images.length); }}
+              onClick={e => { e.stopPropagation(); e.preventDefault(); setImgIdx(i => (i - 1 + images.length) % images.length); }}
               className="absolute left-1 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center bg-black/40 hover:bg-black/60 transition"
             >
               <ChevronLeft className="w-4 h-4 text-white" />
             </button>
             <button
-              onClick={e => { e.preventDefault(); setImgIdx(i => (i + 1) % images.length); }}
+              onClick={e => { e.stopPropagation(); e.preventDefault(); setImgIdx(i => (i + 1) % images.length); }}
               className="absolute right-1 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center bg-black/40 hover:bg-black/60 transition"
             >
               <ChevronRight className="w-4 h-4 text-white" />
             </button>
           </>
         )}
-
-        {url && (
-          <a
-            href={url} target="_blank" rel="noopener noreferrer"
-            className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center bg-black/40 hover:bg-black/60 transition"
-          >
-            <ExternalLink className="w-3 h-3 text-white" />
-          </a>
-        )}
-      </div>
+      </a>
 
       {/* Info */}
       <div className="p-3 flex flex-col flex-1 gap-1">
         {store && <div className="text-[9px] uppercase tracking-widest text-muted-foreground">{store}</div>}
-        <div className="text-xs text-foreground leading-snug line-clamp-2 flex-1">{name}</div>
+        {url
+          ? <a href={url} target="_blank" rel="noopener noreferrer" className="text-xs text-foreground leading-snug line-clamp-2 flex-1 hover:underline">{name}</a>
+          : <div className="text-xs text-foreground leading-snug line-clamp-2 flex-1">{name}</div>
+        }
         {price != null && <div className="text-sm font-semibold text-foreground">${price}</div>}
 
         {/* Actions */}

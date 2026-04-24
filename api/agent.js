@@ -10,6 +10,7 @@ import { analyzeImageStyle }    from '../tools/analyze_image_style.js';
 import { synthesizeStyleDna }   from '../tools/synthesize_style_dna.js';
 import { getInspoProducts }     from '../tools/get_inspo_products.js';
 import { visualSearchForSlot }  from '../tools/visual_search.js';
+import { comprehendFeedback, verifyRefinement, describePlan } from '../tools/refine_search.js';
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, timeout: 60_000 });
 
@@ -192,14 +193,22 @@ function parseRequestSlots(text) {
  * Build a style-aware search query for a specific slot.
  * Always incorporates DNA (fit, color, style) and style tags — profile is always active.
  */
-function buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags = [], ageStyleDefault = '') {
+function buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags = [], ageStyleDefault = '', refinementPlan = null) {
   // Fit only makes sense for bottoms/outerwear — tops are item-specific enough
   const TOP_SLOT_KEYS = ['graphic_tee','band_tee','polo','tank_top','button_down','linen_shirt','oversized_tee','generic_top'];
   const slotKey = Object.entries(SLOT_DEFS).find(([, def]) =>
     def.category === slot.category && def.label === slot.label
   )?.[0] ?? '';
-  const fit   = dna?.dominant_fit && !TOP_SLOT_KEYS.includes(slotKey) ? dna.dominant_fit : '';
-  const color = dna?.primary_colors?.[0] ? hexToBucket(dna.primary_colors[0]) : '';
+
+  // Refinement plan overrides DNA fit/color; fall back to DNA if plan has no override
+  const baseFit = (refinementPlan?.fitOverride && refinementPlan.fitOverride !== 'null')
+    ? refinementPlan.fitOverride
+    : (dna?.dominant_fit ?? '');
+  const fit = baseFit && !TOP_SLOT_KEYS.includes(slotKey) ? baseFit : '';
+
+  const color = (refinementPlan?.colorOverride && refinementPlan.colorOverride !== 'null')
+    ? refinementPlan.colorOverride
+    : (dna?.primary_colors?.[0] ? hexToBucket(dna.primary_colors[0]) : '');
 
   // Primary style from DNA → style tags → age-group prior (never fall back to nothing)
   // Deduplicate: don't repeat the DNA category if it already appears in the style tags
@@ -214,17 +223,27 @@ function buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags = [], ageSt
   // Occasion words (max 2) for context
   const occ = occasion ? occasion.split(' ').slice(0, 2).join(' ') : '';
 
-  return [genderPrefix, fit, color, styleContext, slot.modifiers, occ]
+  // Refinement additions (e.g. "vintage washed") append to query; removals strip matching words
+  const queryAdditions = (refinementPlan?.queryAdditions ?? []).slice(0, 3).join(' ');
+  const queryRemovals  = new Set((refinementPlan?.queryRemovals ?? []).map(r => r.toLowerCase()));
+
+  let query = [genderPrefix, fit, color, styleContext, slot.modifiers, queryAdditions, occ]
     .filter(Boolean)
     .join(' ')
     .replace(/\s+/g, ' ')
     .trim();
+
+  if (queryRemovals.size) {
+    query = query.split(' ').filter(w => !queryRemovals.has(w.toLowerCase())).join(' ');
+  }
+
+  return query;
 }
 
 /**
  * Execute one search per slot in parallel. Returns { slotId: products[] }.
  */
-async function fillSlots(requiredSlots, userProfile, occasion, budget) {
+async function fillSlots(requiredSlots, userProfile, occasion, budget, refinementPlan = null) {
   const dna           = userProfile.styleDna;
   const gender        = userProfile.profile?.gender ?? userProfile.gender;
   const genderPrefix  = gender === 'men' ? "men's" : gender === 'nonbinary' ? 'unisex' : "women's";
@@ -268,7 +287,7 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget) {
     const count = groupSlots.length;
 
     try {
-      const mainQuery = buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags, ageStyleDefault);
+      const mainQuery = buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags, ageStyleDefault, refinementPlan);
       console.log(`[slot-group] "${slot.label}" x${count} | query: "${mainQuery}"`);
 
       // Build text query list (supplement — runs in parallel with visual search)
@@ -289,7 +308,7 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget) {
           budget
         ),
         ...textQueries.map(q =>
-          searchProducts({ query: q.trim(), category: slot.category, maxPrice: budget }).catch(() => [])
+          searchProducts({ query: q.trim(), category: slot.category, maxPrice: budget, countryCode: userProfile.countryCode }).catch(() => [])
         ),
       ]);
 
@@ -319,10 +338,24 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget) {
         ? scored.filter(p => slot.keywords.some(kw => (p.name ?? '').toLowerCase().includes(kw)))
         : scored;
       const kwPool = kwFiltered.length >= count * 2 ? kwFiltered : scored;
-      const pool   = kwPool
+      let pool = kwPool
         .filter(p => !dislikedNames.includes(nameKey(p.name)))
         .sort((a, b) => b._score - a._score)
         .slice(0, 20);
+
+      // Refinement plan: filter out negative keywords and avoided colors post-scoring
+      if (refinementPlan) {
+        const negKws    = (refinementPlan.negativeKeywords ?? []).map(k => k.toLowerCase());
+        const avoidClrs = (refinementPlan.avoidColors ?? []).map(c => c.toLowerCase());
+        if (negKws.length || avoidClrs.length) {
+          const rfFiltered = pool.filter(p => {
+            const name = (p.name ?? '').toLowerCase();
+            return !negKws.some(kw => name.includes(kw)) && !avoidClrs.some(c => name.includes(c));
+          });
+          // Only apply if it doesn't wipe the pool — preserve at least 2 results per slot
+          if (rfFiltered.length >= Math.min(count * 2, 2)) pool = rfFiltered;
+        }
+      }
 
       groupSlots.forEach((s, offset) => {
         slotCache[s.id] = pool.slice(offset);
@@ -422,6 +455,45 @@ function formatRelativeDate(iso) {
   if (diff < 86400 * 2) return 'yesterday';
   if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}d ago`;
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+/**
+ * Re-run the slot pipeline with a RefinementPlan derived from user feedback.
+ * Opus comprehends the feedback → slots re-searched with plan overrides →
+ * deterministic verification confirms constraints are satisfied.
+ */
+async function handleRefinementSearch(feedback, priorSlots, userProfile, occasion, budget, conversationHistory) {
+  const dna = userProfile.styleDna;
+
+  // Build prior results context from recent assistant messages
+  const priorResultsText = conversationHistory
+    .filter(m => m.role === 'assistant')
+    .slice(-3)
+    .map(m => typeof m.content === 'string' ? m.content :
+      (m.content ?? []).filter(b => b.type === 'text').map(b => b.text).join(' '))
+    .join('\n') || 'prior search results';
+
+  const searchContext = priorSlots.map(s => s.label).join(', ') || 'clothing items';
+
+  // Opus comprehends the feedback into a structured RefinementPlan
+  const plan = await comprehendFeedback(feedback, dna, priorResultsText, searchContext);
+
+  // Re-fill slots with plan overrides applied
+  const slotCache = await fillSlots(priorSlots, userProfile, occasion, budget, plan);
+  const filled    = priorSlots.filter(s => (slotCache[s.id]?.length ?? 0) > 0);
+
+  if (!filled.length) {
+    return { plan, outfits: null, description: describePlan(plan), verified: false, gaps: ['no results returned after refinement'] };
+  }
+
+  const outfits = buildShoppingBoard(priorSlots, slotCache);
+  await enrichProductImages(outfits);
+
+  // Deterministic check: are negativeKeywords/avoidColors actually gone from results?
+  const allProducts = outfits.flatMap(o => (o.items ?? []).map(i => i.product)).filter(Boolean);
+  const { satisfied, gaps } = verifyRefinement(plan, allProducts);
+
+  return { plan, outfits, description: describePlan(plan), verified: satisfied, gaps };
 }
 
 // ── Age-group style priors ─────────────────────────────────────────
@@ -811,7 +883,7 @@ async function executeTool(toolName, toolInput, userId, userProfile, excludeProd
       } else if (!/^(women'?s?|men'?s?|unisex)\b/i.test(query)) {
         query = `${gPrefix} ${query}`;
       }
-      const results = await searchProducts({ ...toolInput, query });
+      const results = await searchProducts({ ...toolInput, query, countryCode: userProfile.countryCode });
       if (!results.length) return [];
       const scored = results.map(p => ({ ...p, ...scoreProductMatch(p, userProfile.styleDna, occasion) }));
       // Filter out the excluded product (swap reroll) — normalize both names for fuzzy match
@@ -972,11 +1044,94 @@ async function runAgent(message, conversationHistory, userId, recentConversation
   const requiredSlots = parseRequestSlots(userText);
   console.log(`[slots] parsed ${requiredSlots.length} slots:`, requiredSlots.map(s => `${s.id}(${s.label})`).join(', ') || 'none (vague request)');
 
+  // ── REFINEMENT PATH ───────────────────────────────────────────────
+  // When the user is giving feedback on prior results (no new item request
+  // parsed from this message alone) and there's prior conversation context,
+  // route through the refinement pipeline instead of a fresh search.
+  if (requiredSlots.length === 0 && priorUserTurns > 0) {
+    const t = message.toLowerCase();
+    const looksLikeFeedback = message.length < 300 && (
+      /too (dark|light|bright|casual|formal|expensive|cheap|similar|different|boring|loud|busy)/i.test(t) ||
+      /more (relaxed|fitted|colorful|neutral|vintage|minimal|casual|formal|earthy|muted|washed)/i.test(t) ||
+      /less (dark|light|casual|formal|expensive|loud|busy|graphic|printed|branded)/i.test(t) ||
+      /nothing with\b|no (logos?|graphics?|prints?|patterns?|branding|text)/i.test(t) ||
+      /different (color|style|fit|vibe|aesthetic)/i.test(t) ||
+      /not (my style|what i wanted|right|it)/i.test(t) ||
+      /\b(cheaper|pricier|lighter|darker|baggier|slimmer|looser|tighter|softer|cleaner)\b/i.test(t) ||
+      /\b(refine|tighten|narrow|sharpen|adjust|tweak)\b.*(search|results|look|picks)/i.test(t) ||
+      /\b(these|this|them|those) (don'?t|aren'?t|isn'?t|look|feel|seem|are)\b/i.test(t)
+    );
+
+    if (looksLikeFeedback) {
+      // Reconstruct which item types to re-search from historical user messages
+      const historicalUserText = conversationHistory
+        .filter(m => m.role === 'user')
+        .map(m => typeof m.content === 'string' ? m.content :
+          (m.content ?? []).filter(b => b.type === 'text').map(b => b.text).join(' '))
+        .join(' ');
+      const priorSlots = parseRequestSlots(historicalUserText);
+
+      if (priorSlots.length > 0) {
+        const budget = userProfile.wallet?.balance ?? 500;
+        try {
+          const refinement = await handleRefinementSearch(
+            message, priorSlots, userProfile, occasion, budget, conversationHistory
+          );
+          const { plan, outfits, description, verified, gaps } = refinement;
+
+          const verifyNote = verified
+            ? 'Verification passed — new results fully satisfy the feedback.'
+            : `Partial match — remaining issues: ${gaps.join('; ')}.`;
+
+          const ctxMsg = `[Refinement search complete. Opus understood the feedback as: "${plan.interpretation}". Changes applied: ${description}. ${verifyNote} Updated product cards are displayed in the UI. Reply in 1–2 plain sentences confirming what was adjusted. No markdown.]`;
+
+          const replyResp = await client.messages.create({
+            model:      LOOP_MODEL,
+            max_tokens: 256,
+            system:     buildSystemPrompt(userProfile, recentConversations),
+            messages:   [...conversationHistory, { role: 'user', content: message }, { role: 'user', content: ctxMsg }],
+          });
+          const { reply, choices } = parseChoices(replyResp.content.find(b => b.type === 'text')?.text ?? '');
+          return { reply, history: messages, outfits, choices };
+        } catch (err) {
+          console.error('[refine] refinement pipeline failed:', err.message);
+          // Fall through to slot engine / agent loop
+        }
+      }
+    }
+  }
+
   if (requiredSlots.length > 0) {
-    // ── Pre-search clarification ──────────────────────────────────
-    // On the first message, if there's no occasion or vibe context,
-    // ask ONE targeted question before searching so results are focused.
-    // Skip if the user has already answered (conversationHistory has user messages).
+    // ── Pre-search fit clarification (jeans/trousers) ─────────────
+    // Jeans fit spans a huge range — barrel vs straight vs skater are
+    // completely different results. Always ask on the FIRST turn if the
+    // user requested bottoms without a precise fit word, even when they
+    // gave vibe/occasion context. This check is independent of hasVibeContext.
+    const hasBottomSlot = requiredSlots.some(s => s.category === 'bottoms');
+    const fitAlreadySpecified = /\b(slim|skinny|straight|baggy|wide.?leg|barrel|skater|skate|flare|bootcut|tapered|relaxed|loose|fitted|regular)\b/i.test(message);
+    const fitAlreadyAnswered  = conversationHistory.some(m => {
+      const txt = typeof m.content === 'string' ? m.content :
+        (m.content ?? []).filter(b => b.type === 'text').map(b => b.text).join(' ');
+      return /\b(slim|skinny|straight|baggy|wide.?leg|barrel|skater|skate|flare|bootcut|tapered|relaxed|loose|fitted|regular|medium|not too|a bit|slightly|kinda|moderate|\d{2}"?)\b/i.test(txt);
+    });
+
+    if (priorUserTurns === 0 && hasBottomSlot && !fitAlreadySpecified && !fitAlreadyAnswered) {
+      const ctxMsg = `[The user asked for bottoms (jeans/pants) without specifying fit. Ask ONE targeted question about fit — this matters a lot for search quality and "relaxed" is too broad to be useful. Use [CHOICES] with 3 options. Keep it to one sentence. Examples of good choices: "Slightly relaxed straight | Barrel / wide-leg | Skate wide / very baggy" or "Slim / straight | Relaxed / tapered | Wide / barrel". Do NOT search yet — wait for the answer.]`;
+      const clarifyResp = await client.messages.create({
+        model:      LOOP_MODEL,
+        max_tokens: 200,
+        system:     buildSystemPrompt(userProfile, recentConversations),
+        messages:   [...conversationHistory, { role: 'user', content: message }, { role: 'user', content: ctxMsg }],
+      });
+      const { reply: clarifyText, choices: clarifyChoices } = parseChoices(
+        clarifyResp.content.find(b => b.type === 'text')?.text ?? ''
+      );
+      return { reply: clarifyText, history: messages, outfits: null, choices: clarifyChoices };
+    }
+
+    // ── Pre-search vibe clarification ─────────────────────────────
+    // If there's no occasion or vibe context at all, ask one question
+    // before searching. Skip if fit question was already triggered above.
     const hasVibeContext = occasion !== null ||
       /\b(casual|formal|edgy|minimal|vintage|streetwear|grunge|chill|clean|classic|preppy|coastal|retro|vibe|aesthetic|look|feel|style|inspired|inspo|mood|trip|travel|event|night|day|summer|winter|spring|fall)\b/i.test(message);
 

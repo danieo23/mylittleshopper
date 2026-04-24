@@ -22,16 +22,16 @@ const API_KEY  = process.env.SHOPPING_API_KEY;
  * @param {string[]} params.stores      - Preferred stores to filter by (optional)
  * @returns {object[]} Normalized product array
  */
-export async function searchProducts({ query, category, maxPrice, stores = [] }) {
+export async function searchProducts({ query, category, maxPrice, stores = [], countryCode = 'us' }) {
   if (!API_KEY) throw new Error('SHOPPING_API_KEY is not set in .env');
 
   if (PROVIDER === 'serpapi') {
-    return _searchViaSerpApi({ query, category, maxPrice, stores });
+    return _searchViaSerpApi({ query, category, maxPrice, stores, countryCode });
   }
   throw new Error(`Unknown SHOPPING_API_PROVIDER: ${PROVIDER}`);
 }
 
-async function _searchViaSerpApi({ query, maxPrice }) {
+async function _searchViaSerpApi({ query, maxPrice, countryCode = 'us' }) {
   // No store filtering — Google Shopping naturally surfaces diverse retailers.
   // Filtering by store name in the query narrows results too aggressively.
   const fullQuery = query;
@@ -40,6 +40,8 @@ async function _searchViaSerpApi({ query, maxPrice }) {
   url.searchParams.set('engine',  'google_shopping');
   url.searchParams.set('q',       fullQuery);
   url.searchParams.set('api_key', API_KEY);
+  url.searchParams.set('gl',      countryCode || 'us');  // country — prevents results from wrong region
+  url.searchParams.set('hl',      'en');
   if (maxPrice) url.searchParams.set('price_max', String(maxPrice));
 
   const res  = await fetch(url.toString(), { signal: AbortSignal.timeout(8000) });

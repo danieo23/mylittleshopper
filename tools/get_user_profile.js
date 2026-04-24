@@ -62,6 +62,8 @@ export async function getUserProfile(userId) {
     styleTags:           styleProfile?.style_tags           ?? [],
     pinterestBoardUrls: styleProfile?.pinterest_board_urls
                           ?? (styleProfile?.pinterest_board_url ? [styleProfile.pinterest_board_url] : []),
+    countryCode:  profile?.country_code ?? 'us',
+    location:     profile?.location     ?? null,
     confidenceLevel,
     imageCount: totalImages,
   };
