@@ -52,7 +52,9 @@ async function analyzeWardrobe(userId) {
     .select('*')
     .eq('user_id', userId);
 
-  const items = (allItems ?? []).filter(i => !i.style_category);
+  // Process items that are missing style_category OR item_type.
+  // This catches newly uploaded items AND items analyzed before item_type was stored.
+  const items = (allItems ?? []).filter(i => !i.style_category || !i.item_type);
   if (!items.length) return { analyzed: 0, alreadyDone: true };
 
   let analyzed = 0;
@@ -64,6 +66,7 @@ async function analyzeWardrobe(userId) {
       fit_type:             result.fit_type,
       formality_score:      result.formality_score,
       style_category:       result.style_category ?? 'unclassified',
+      item_type:            result.item_type ?? null,
       brand:                result.brand,
       fabric:               result.fabric,
       occasion_suitability: result.occasion_suitability,

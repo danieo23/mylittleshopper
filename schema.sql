@@ -134,6 +134,12 @@ alter table style_profiles add column if not exists wardrobe_board_urls text[] d
 alter table aspiration_items add column if not exists source_url text;
 alter table aspiration_items add column if not exists shopping_results jsonb;
 
+-- Visual search: item_type for anchor selection, public_url for Lens access
+-- item_type: 'top' | 'bottom' | 'shoes' | 'outerwear' | 'accessory' | 'full_outfit'
+-- public_url: Supabase Storage URL, lazily populated on first Lens search
+alter table wardrobe_items add column if not exists item_type text;
+alter table wardrobe_items add column if not exists public_url text;
+
 -- ─── Row Level Security ───────────────────────────────────────────
 
 alter table users              enable row level security;

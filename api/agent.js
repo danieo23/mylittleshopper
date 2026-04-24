@@ -9,6 +9,7 @@ import { createOrder }          from '../tools/create_order.js';
 import { analyzeImageStyle }    from '../tools/analyze_image_style.js';
 import { synthesizeStyleDna }   from '../tools/synthesize_style_dna.js';
 import { getInspoProducts }     from '../tools/get_inspo_products.js';
+import { visualSearchForSlot }  from '../tools/visual_search.js';
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, timeout: 60_000 });
 
@@ -258,6 +259,10 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget) {
     typeGroups.get(sig).push(slot);
   }
 
+  // Visual bonus: Lens results already passed through the user's actual wardrobe aesthetic,
+  // so they earn a small scoring advantage over text-matched products at the same base score.
+  const VISUAL_BONUS = 8;
+
   await Promise.all([...typeGroups.values()].map(async (groupSlots) => {
     const slot  = groupSlots[0];
     const count = groupSlots.length;
@@ -266,33 +271,46 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget) {
       const mainQuery = buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags, ageStyleDefault);
       console.log(`[slot-group] "${slot.label}" x${count} | query: "${mainQuery}"`);
 
-      // Always run main query. For N>1, add a second query variation for retailer diversity.
-      // Boutique/thrift extra queries based on openness tier.
-      const queries = [mainQuery];
+      // Build text query list (supplement — runs in parallel with visual search)
+      const textQueries = [mainQuery];
       if (count > 1) {
-        // Second variation: strip fit/color, rely on style + item type → different retailer pool
-        queries.push(`${genderPrefix} ${slot.modifiers} ${occasion ? occasion.split(' ')[0] : ''}`);
+        textQueries.push(`${genderPrefix} ${slot.modifiers} ${occasion ? occasion.split(' ')[0] : ''}`);
       }
-      if (wantsBoutique) queries.push(`${genderPrefix} boutique indie ${slot.modifiers}`);
-      if (wantsThrift)   queries.push(`${genderPrefix} thrift vintage secondhand ${slot.modifiers}`);
+      if (wantsBoutique) textQueries.push(`${genderPrefix} boutique indie ${slot.modifiers}`);
+      if (wantsThrift)   textQueries.push(`${genderPrefix} thrift vintage secondhand ${slot.modifiers}`);
 
-      const raws = await Promise.all(
-        queries.map(q => searchProducts({ query: q.trim(), category: slot.category, maxPrice: budget }).catch(() => []))
-      );
+      // ── Run visual search + all text queries in parallel ───────────
+      const [visualResult, ...textResults] = await Promise.all([
+        visualSearchForSlot(
+          slot.category,
+          userProfile.wardrobeItems,
+          userProfile.aspirationItems ?? [],
+          dna,
+          budget
+        ),
+        ...textQueries.map(q =>
+          searchProducts({ query: q.trim(), category: slot.category, maxPrice: budget }).catch(() => [])
+        ),
+      ]);
 
-      // Merge + dedupe by name
-      const seen = new Set();
-      const unique = raws.flat().filter(p => {
+      // Tag Lens results with visual bonus; text results get no tag
+      const lensProducts  = (visualResult.products ?? []).map(p => ({ ...p, _visualBonus: VISUAL_BONUS }));
+      const textProducts  = textResults.flat();
+
+      // Merge: Lens first (preferred), then text (fills gaps)
+      // Deduplicate across both streams by normalized name
+      const seen   = new Set();
+      const unique = [...lensProducts, ...textProducts].filter(p => {
         const k = nameKey(p.name);
         if (seen.has(k)) return false;
         seen.add(k);
         return true;
       });
 
-      // Score + keyword filter + dislike removal
+      // Score all products; Lens results receive the visual bonus on top
       const scored = unique.map(p => ({
         ...p,
-        _score:   scoreProductMatch(p, dna, occasion).score,
+        _score:   scoreProductMatch(p, dna, occasion).score + (p._visualBonus ?? 0),
         _slot_id: slot.id,
         _subtype: slot.label,
       }));
@@ -306,13 +324,11 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget) {
         .sort((a, b) => b._score - a._score)
         .slice(0, 20);
 
-      // Assign to each slot in the group with offset so each gets a unique product.
-      // Slot 0 → pool[0..], Slot 1 → pool[1..], etc.
       groupSlots.forEach((s, offset) => {
         slotCache[s.id] = pool.slice(offset);
       });
 
-      console.log(`[slot-group] "${slot.label}" x${count}: ${raws.flat().length} raw → ${pool.length} pool`);
+      console.log(`[slot-group] "${slot.label}" x${count}: lens=${lensProducts.length} text=${textProducts.length} pool=${pool.length} visual_source=${visualResult.source}`);
     } catch (err) {
       console.error(`[slot-group] "${slot.label}" search failed:`, err.message);
       groupSlots.forEach(s => { slotCache[s.id] = []; });
