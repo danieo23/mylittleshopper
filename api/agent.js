@@ -85,14 +85,15 @@ const TOOLS = [
 
 const SLOT_DEFS = {
   // Tops
-  graphic_tee:    { category: 'tops',      label: 'graphic tee',       keywords: ['graphic', 'print', 'tee', 't-shirt'],                  modifiers: 'graphic tee streetwear' },
-  band_tee:       { category: 'tops',      label: 'band tee',          keywords: ['band', 'music', 'tee', 'graphic'],                     modifiers: 'band tee vintage music' },
-  button_down:    { category: 'tops',      label: 'button-down shirt', keywords: ['button', 'shirt', 'oxford', 'poplin', 'woven', 'chambray', 'linen'], modifiers: 'button-down shirt' },
-  polo:           { category: 'tops',      label: 'polo shirt',        keywords: ['polo'],                                                modifiers: 'polo shirt' },
-  tank_top:       { category: 'tops',      label: 'tank top',          keywords: ['tank', 'cami', 'sleeveless'],                          modifiers: 'tank top cami' },
-  linen_shirt:    { category: 'tops',      label: 'linen shirt',       keywords: ['linen'],                                               modifiers: 'linen shirt' },
-  oversized_tee:  { category: 'tops',      label: 'oversized tee',     keywords: ['oversized', 'boxy', 'tee', 't-shirt'],                 modifiers: 'oversized boxy tee' },
-  generic_top:    { category: 'tops',      label: 'top',               keywords: [],                                                      modifiers: 'top shirt' },
+  graphic_tee:      { category: 'tops',      label: 'graphic tee',          keywords: ['graphic', 'print', 'tee', 't-shirt'],                              modifiers: 'graphic tee' },
+  band_tee:         { category: 'tops',      label: 'band tee',             keywords: ['band', 'music', 'tee', 'graphic'],                                 modifiers: 'band tee vintage music' },
+  short_sleeve:     { category: 'tops',      label: 'short sleeve shirt',   keywords: ['short sleeve', 'short-sleeve', 'ss shirt'],                        modifiers: 'short sleeve shirt' },
+  button_down:      { category: 'tops',      label: 'button-down shirt',    keywords: ['button', 'shirt', 'oxford', 'poplin', 'woven', 'chambray', 'linen'], modifiers: 'button-down shirt' },
+  polo:             { category: 'tops',      label: 'polo shirt',           keywords: ['polo'],                                                            modifiers: 'polo shirt' },
+  tank_top:         { category: 'tops',      label: 'tank top',             keywords: ['tank', 'cami', 'sleeveless'],                                      modifiers: 'tank top cami' },
+  linen_shirt:      { category: 'tops',      label: 'linen shirt',          keywords: ['linen'],                                                           modifiers: 'linen shirt' },
+  oversized_tee:    { category: 'tops',      label: 'oversized tee',        keywords: ['oversized', 'boxy', 'tee', 't-shirt'],                             modifiers: 'oversized boxy tee' },
+  generic_top:      { category: 'tops',      label: 'top',                  keywords: [],                                                                  modifiers: 'top shirt' },
   // Bottoms
   cargo_pants:    { category: 'bottoms',   label: 'cargo pants',       keywords: ['cargo'],                                               modifiers: 'cargo pants' },
   baggy_jeans:    { category: 'bottoms',   label: 'baggy jeans',       keywords: ['baggy', 'wide', 'loose', 'barrel', 'relaxed'],         modifiers: 'baggy wide leg jeans relaxed' },
@@ -151,6 +152,7 @@ function parseRequestSlots(text) {
   if (/\bpolo\b/i.test(t)) add('polo', countFor('polos?'));
   if (/\btank top\b|\bcami\b/i.test(t)) add('tank_top');
   if (/oversized tee|boxy tee/i.test(t) && !/graphic/i.test(t)) add('oversized_tee', countFor('(?:oversized|boxy)\\s+tees?'));
+  if (/short.?sleeve\s+(?:shirt|top|tee)/i.test(t) && !slots.some(s => s.category === 'tops')) add('short_sleeve', countFor('short.?sleeve\\s+(?:shirts?|tops?|tees?)'));
   // Generic top only if no specific top detected AND user mentioned tops/shirts
   if (!slots.some(s => s.category === 'tops') && /\btop(s)?\b|\bshirt(s)?\b|\btee(s)?\b/i.test(t)) {
     add('generic_top', countFor('(?:tops?|shirts?|tees?)'));
@@ -199,11 +201,13 @@ function buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags = [], ageSt
   const color = dna?.primary_colors?.[0] ? hexToBucket(dna.primary_colors[0]) : '';
 
   // Primary style from DNA → style tags → age-group prior (never fall back to nothing)
+  // Deduplicate: don't repeat the DNA category if it already appears in the style tags
   const dnaStyle = dna?.primary_style_category ?? '';
-  const tagStyle = styleTags.length
-    ? styleTags.slice(0, 2).map(t => t.toLowerCase()).join(' ')
-    : '';
-  const styleContext = [dnaStyle, tagStyle].filter(Boolean).join(' ').trim()
+  const extraTags = styleTags
+    .map(t => t.toLowerCase())
+    .filter(t => t !== dnaStyle && t !== 'smart casual')  // 'smart casual' is too generic to help searches
+    .slice(0, 2);
+  const styleContext = [dnaStyle, ...extraTags].filter(Boolean).join(' ').trim()
     || ageStyleDefault;
 
   // Occasion words (max 2) for context
