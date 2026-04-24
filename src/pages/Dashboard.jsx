@@ -295,9 +295,56 @@ function OutfitRow({ outfit, outfitIdx, userId, history }) {
   );
 }
 
+// ─── Feedback refinement bar ─────────────────────────────────────────
+
+function RefinementBar({ onSubmit }) {
+  const [text,    setText]    = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const submit = async () => {
+    const msg = text.trim();
+    if (!msg || loading) return;
+    setLoading(true);
+    setText('');
+    await onSubmit(msg);
+    setLoading(false);
+  };
+
+  return (
+    <div className="mt-4 border border-border bg-card">
+      <div className="px-4 pt-3 pb-1">
+        <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2">
+          Refine these results
+        </p>
+        <div className="flex items-center gap-2">
+          <input
+            value={text}
+            onChange={e => setText(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') submit(); }}
+            placeholder='e.g. "too dark", "more relaxed fit", "nothing with logos"'
+            disabled={loading}
+            className="flex-1 bg-secondary border border-border text-sm text-foreground placeholder:text-muted-foreground px-3 py-2 focus:outline-none focus:border-primary disabled:opacity-50"
+          />
+          <button
+            onClick={submit}
+            disabled={loading || !text.trim()}
+            className="shrink-0 px-4 py-2 bg-primary text-primary-foreground text-xs uppercase tracking-wider hover:opacity-90 transition disabled:opacity-30 flex items-center gap-2"
+          >
+            {loading && <Loader2 className="w-3 h-3 animate-spin" />}
+            {loading ? 'Refining…' : 'Tighten'}
+          </button>
+        </div>
+        <p className="text-[10px] text-muted-foreground/50 mt-1.5 pb-2">
+          Opus reads your feedback and resharpens the search — results update automatically.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ─── Outfit carousel — renders ALL returned outfits ──────────────────
 
-function OutfitCarousel({ outfits, userId, history }) {
+function OutfitCarousel({ outfits, userId, history, onRefinement }) {
   if (!outfits?.length) return null;
   return (
     <div className="mt-3">
@@ -310,6 +357,7 @@ function OutfitCarousel({ outfits, userId, history }) {
           history={history}
         />
       ))}
+      {onRefinement && <RefinementBar onSubmit={onRefinement} />}
     </div>
   );
 }
@@ -407,7 +455,7 @@ function SelectableCard({ item, selected, onToggle }) {
   );
 }
 
-function WardrobeRedoLayout({ outfits }) {
+function WardrobeRedoLayout({ outfits, onRefinement }) {
   const [saved, setSaved] = useState(new Set());
 
   const allItems = (outfits ?? []).flatMap(o => o.items ?? []);
@@ -462,6 +510,8 @@ function WardrobeRedoLayout({ outfits }) {
           </div>
         </div>
       ))}
+
+      {onRefinement && <RefinementBar onSubmit={onRefinement} />}
 
       {/* Saved summary */}
       {savedItems.length > 0 && (
@@ -820,8 +870,16 @@ export default function Dashboard() {
                       )}
                       {msg.outfits && (
                         msg.wardrobeRedo
-                          ? <WardrobeRedoLayout outfits={msg.outfits} />
-                          : <OutfitCarousel outfits={msg.outfits} userId={userId} history={history} />
+                          ? <WardrobeRedoLayout
+                              outfits={msg.outfits}
+                              onRefinement={i === messages.length - 1 ? (fb) => send(fb) : null}
+                            />
+                          : <OutfitCarousel
+                              outfits={msg.outfits}
+                              userId={userId}
+                              history={history}
+                              onRefinement={i === messages.length - 1 ? (fb) => send(fb) : null}
+                            />
                       )}
                     </div>
                   )}
