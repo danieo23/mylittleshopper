@@ -67,6 +67,7 @@ async function analyzeWardrobe(userId) {
       brand:                result.brand,
       fabric:               result.fabric,
       occasion_suitability: result.occasion_suitability,
+      analyzed:             true,
     }).eq('id', item.id);
     analyzed++;
   });
