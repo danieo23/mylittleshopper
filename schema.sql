@@ -139,7 +139,9 @@ alter table users add column if not exists country_code text default 'us';
 alter table users add column if not exists address      text;
 
 -- Style profile fields added post-launch
-alter table style_profiles add column if not exists store_openness_tiers text[] default '{}';
+alter table style_profiles add column if not exists store_openness_tiers text[]   default '{}';
+alter table style_profiles add column if not exists quiz_completed       boolean  default false;
+alter table style_profiles add column if not exists quiz_selections      jsonb    default '{}';
 alter table style_profiles add column if not exists gender    text;
 alter table style_profiles add column if not exists age_range text;
 
