@@ -60,7 +60,10 @@ async function _searchViaSerpApi({ query, maxPrice, countryCode = 'us' }) {
       // Always include thumbnail first, then any additional images SerpAPI returns.
       // De-duped so the thumbnail doesn't appear twice if it's also in p.images.
       all_images:  [...new Set([p.thumbnail, ...(p.images ?? [])].filter(Boolean))],
-      product_url: p.link,
+      // p.link is a Google Shopping product page (always clickable), preferred over null.
+      // Some placements omit link — fall back to a Google Shopping search for the product.
+      product_url: p.link
+        ?? (p.title ? `https://www.google.com/search?tbm=shop&q=${encodeURIComponent(p.title + (p.source ? ' ' + p.source : ''))}` : null),
       serpapi_product_link: p.serpapi_product_api_link ?? null,
       colors:         null,
       style_category: null,

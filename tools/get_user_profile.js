@@ -38,6 +38,13 @@ export async function getUserProfile(userId) {
     supabase.from('wallet').select('*').eq('user_id', userId).single(),
   ]);
 
+  // Fetch auth email separately — avoids destructuring errors if admin call fails
+  let authEmail = profile?.email ?? null;
+  try {
+    const { data: authData } = await supabase.auth.admin.getUserById(userId);
+    if (authData?.user?.email) authEmail = authData.user.email;
+  } catch { /* non-fatal — fall back to profile.email */ }
+
   const wardrobeCount   = wardrobeItems?.length ?? 0;
   const aspirationTotal = aspirationItems?.length ?? 0;
   const totalImages     = wardrobeCount + aspirationTotal;
@@ -64,6 +71,7 @@ export async function getUserProfile(userId) {
                           ?? (styleProfile?.pinterest_board_url ? [styleProfile.pinterest_board_url] : []),
     countryCode:  profile?.country_code ?? 'us',
     location:     profile?.location     ?? null,
+    authEmail,
     confidenceLevel,
     imageCount: totalImages,
   };
