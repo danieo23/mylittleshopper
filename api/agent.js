@@ -261,10 +261,10 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget, refinemen
     || ageStyleMap[userProfile.ageRange] || 'smart casual';
   const wantsBoutique = opennessTiers.includes('mixed') || opennessTiers.includes('open');
   const wantsThrift   = opennessTiers.includes('mixed') || opennessTiers.includes('open');
-  const dislikedNames = (dna?.explicit_dislikes?.product_names ?? [])
-    .map(n => n.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 50));
-
-  const nameKey = name => (name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40);
+  const nameKey = name => (name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 50);
+  const dislikedNames = new Set(
+    (dna?.explicit_dislikes?.product_names ?? []).map(n => nameKey(n))
+  );
   const slotCache = {};
 
   // ── Group slots by type (same label+category = same search) ──────
@@ -339,7 +339,7 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget, refinemen
         : scored;
       const kwPool = kwFiltered.length >= count * 2 ? kwFiltered : scored;
       let pool = kwPool
-        .filter(p => !dislikedNames.includes(nameKey(p.name)))
+        .filter(p => !dislikedNames.has(nameKey(p.name)))
         .sort((a, b) => b._score - a._score)
         .slice(0, 20);
 
@@ -1457,12 +1457,11 @@ async function runAgent(message, conversationHistory, userId, recentConversation
             hasSearchResults = true;
             const cat = block.input.category;
             // Strip products the user has explicitly disliked — exact name match (normalized).
-            const dislikedNames = (userProfile.styleDna?.explicit_dislikes?.product_names ?? [])
-              .map(n => n.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 50));
-            const dedisliked = result.filter(p => {
-              const key = (p.name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 50);
-              return !dislikedNames.includes(key);
-            });
+            const nk = s => (s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 50);
+            const dislikedSet = new Set(
+              (userProfile.styleDna?.explicit_dislikes?.product_names ?? []).map(n => nk(n))
+            );
+            const dedisliked = result.filter(p => !dislikedSet.has(nk(p.name)));
             // Tag explicit search results so they rank above inspo products in the cache.
             const tagged = dedisliked.map(p => ({ ...p, _from_explicit_search: true, score: (p.score ?? 50) + 20, _score: (p._score ?? 50) + 20 }));
             const merged = [...tagged, ...(productCache[cat] ?? [])];
