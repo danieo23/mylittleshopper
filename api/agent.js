@@ -1085,54 +1085,6 @@ async function runAgent(message, conversationHistory, userId, recentConversation
   }
   const occasion = occasionWordsEarly.size ? [...occasionWordsEarly].join(' ') : null;
 
-  // ── VISUAL-ONLY TRIAL (danrosenboim67@gmail.com) ─────────────────
-  // One-time test: every search for this account uses ONLY Google Lens results
-  // from their aspiration/Pinterest images — no text keyword search at all.
-  // Uses fillSlots (which already runs Lens via visualSearchForSlot) then strips
-  // all non-visual products, so results are purely image-matched.
-  const isVisualOnlyTrial = userProfile.authEmail === 'danrosenboim67@gmail.com';
-  console.log('[visual-trial] authEmail:', userProfile.authEmail, '| isVisualOnlyTrial:', isVisualOnlyTrial);
-  if (isVisualOnlyTrial) {
-    try {
-      const budget     = userProfile.wallet?.balance ?? 500;
-      const trialSlots = buildWardrobeRedoSlots(userProfile.styleDna, occasion);
-      const rawCache   = await fillSlots(trialSlots, userProfile, occasion, budget);
-
-      // Keep only Lens-matched products (tagged with _visualBonus by fillSlots)
-      const visualCache = {};
-      for (const [slotId, products] of Object.entries(rawCache)) {
-        const visual = (products ?? []).filter(p => p._visualBonus != null);
-        // Need at least 2 visual products per slot — fall back to all if too sparse
-        visualCache[slotId] = visual.length >= 2 ? visual : (products ?? []);
-      }
-
-      const filledCount = Object.values(visualCache).filter(p => p.length > 0).length;
-      console.log('[visual-trial] slots filled:', filledCount, '/', trialSlots.length);
-
-      if (filledCount > 0) {
-        const outfits = buildShoppingBoard(trialSlots, visualCache, 8);
-        await enrichProductImages(outfits);
-
-        const catSummary = trialSlots
-          .filter(s => (visualCache[s.id]?.length ?? 0) > 0)
-          .map(s => s.label)
-          .join(', ');
-        const ctxMsg = `[Visual-only trial results loaded. All products are from Google Lens reverse image searches on this user's saved Pinterest board images — no text search used. Categories: ${catSummary}. Reply in 1–2 sentences explaining results come directly from visual matches on their board photos. Plain text only, no markdown.]`;
-        const replyResp = await client.messages.create({
-          model:      LOOP_MODEL,
-          max_tokens: 256,
-          system:     buildSystemPrompt(userProfile, recentConversations),
-          messages:   [...conversationHistory, { role: 'user', content: message }, { role: 'user', content: ctxMsg }],
-        });
-        const { reply, choices } = parseChoices(replyResp.content.find(b => b.type === 'text')?.text ?? '');
-        return { reply, history: messages, outfits, choices };
-      }
-    } catch (err) {
-      console.error('[visual-trial] failed:', err.message);
-      // Fall through to normal slot engine
-    }
-  }
-
   // ── SLOT ENGINE: deterministic per-item search ────────────────────
   // Parse user's request into typed slots and fill each one with a
   // targeted search. This is the primary path for specific-item requests.
