@@ -70,6 +70,8 @@ async function analyzeWardrobe(userId) {
       brand:                result.brand,
       fabric:               result.fabric,
       occasion_suitability: result.occasion_suitability,
+      ocr_text:             result.ocr_text ?? null,
+      cultural_signals:     result.cultural_signals ?? [],
       analyzed:             true,
     }).eq('id', item.id);
     analyzed++;

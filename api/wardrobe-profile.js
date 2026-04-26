@@ -90,6 +90,17 @@ function buildWardrobeStats(items) {
   // Basics (no brand / not graphic)
   const basics = items.filter(i => !i.brand && !['streetwear'].includes(i.style_category));
 
+  // All verbatim OCR text found on garments
+  const ocrTexts = items.map(i => i.ocr_text).filter(Boolean);
+
+  // Cultural signals aggregated from OCR (band-tee, vintage-bootleg, etc.)
+  const culturalSignalFreq = {};
+  for (const item of items) {
+    for (const sig of (item.cultural_signals ?? [])) {
+      culturalSignalFreq[sig] = (culturalSignalFreq[sig] ?? 0) + 1;
+    }
+  }
+
   return {
     total,
     bandTees: { count: bandTees.length, artists: [...new Set(bandTees.map(i => i.brand).filter(Boolean))] },
@@ -104,6 +115,8 @@ function buildWardrobeStats(items) {
       avg: items.filter(i => i.formality_score).reduce((s, i) => s + i.formality_score, 0) /
            (items.filter(i => i.formality_score).length || 1),
     },
+    ocrTexts,
+    culturalSignals: culturalSignalFreq,
   };
 }
 
@@ -115,7 +128,7 @@ export default async function handler(req, res) {
 
   const { data: items } = await supabase
     .from('wardrobe_items')
-    .select('item_type, brand, style_category, fit_type, colors, formality_score, fabric, occasion_suitability')
+    .select('item_type, brand, style_category, fit_type, colors, formality_score, fabric, occasion_suitability, ocr_text, cultural_signals')
     .eq('user_id', userId)
     .not('item_type', 'is', null);
 
@@ -128,6 +141,8 @@ export default async function handler(req, res) {
 
 WARDROBE SUMMARY (${stats.total} analyzed items):
 - Band/music tees: ${stats.bandTees.count} (${stats.bandTees.artists.join(', ') || 'none'})
+- Verbatim OCR text found on garments: ${stats.ocrTexts.length ? stats.ocrTexts.join(' | ') : 'none yet — re-analyze photos to extract'}
+- Cultural signals from OCR: ${Object.keys(stats.culturalSignals).length ? JSON.stringify(stats.culturalSignals) : 'none yet'}
 - Color distribution: ${JSON.stringify(stats.colorDistribution)}
 - Dark neutral ratio: ~${stats.darkNeutralRatio}% of items are dark/muted
 - Fit breakdown: ${JSON.stringify(stats.fitCounts)}

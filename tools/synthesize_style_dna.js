@@ -91,21 +91,12 @@ export async function synthesizeStyleDna(userId) {
   const brandFreq = buildFrequencyMap(all, i => i.brand, wFn);
   const brandAffinities = topN(brandFreq, 10);
 
-  // Cultural profile: aggregate cultural_signals from items + derive from brand names.
-  // cultural_signals is a new field from the updated OCR prompt — may be absent on older items.
-  // We also infer subculture signals from brand names themselves (band tees, skate brands, etc.)
+  // Cultural profile: aggregate cultural_signals from wardrobe items.
+  // cultural_signals is stored by analyze.js after the OCR dual-pass prompt.
+  // Older items (pre-migration) have null — they'll contribute once re-analyzed.
   const culturalFreq = buildFrequencyMap(
     [...(wardrobe ?? []), ...ownedPins],
-    i => {
-      const signals = [...(i.cultural_signals ?? [])];
-      // Derive cultural signal from brand name if it looks like a band/artist/subculture
-      const brand = (i.brand ?? '').toLowerCase();
-      if (brand && !/nike|adidas|h&m|zara|gap|uniqlo|levis|ralph|tommy|polo|gucci|prada|lv|supreme|carhartt|champion/.test(brand)) {
-        // Non-mainstream brand visible on garment = likely band, artist, or niche label
-        if (!signals.includes('brand-logo')) signals.push('brand-logo');
-      }
-      return signals;
-    },
+    i => i.cultural_signals ?? [],
     wFn
   );
   const culturalProfile = topN(culturalFreq, 8).filter(Boolean);
