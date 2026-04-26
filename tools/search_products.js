@@ -68,8 +68,8 @@ function buildStyleBrief(styleDna, query, category) {
     `Fit preference: ${styleDna.dominant_fit ?? 'not specified'}`,
     colors.length ? `Core palette: ${colors.join(', ')}` : null,
     ocrTexts.length
-      ? `Verbatim text on garments (OCR): ${ocrTexts.join(' | ')}` : null,
-    cultural.length ? `Cultural signals: ${cultural.join(', ')}` : null,
+      ? `Text found on owned garments — use ONLY to infer aesthetic identity, NEVER to search for these exact graphics or characters: ${ocrTexts.join(' | ')}` : null,
+    cultural.length ? `Cultural signals (inferred from owned items): ${cultural.join(', ')}` : null,
     styleDna.brand_affinities?.length
       ? `Wardrobe brand signals: ${styleDna.brand_affinities.slice(0, 5).join(', ')}`
       : null,
@@ -99,7 +99,7 @@ TASK: Find "${query}" in the "${category}" category.${budgetNote}
 
 Selection rules:
 - The "Profile-recommended brands" line lists brands already identified as the best aesthetic match for this wardrobe — prefer these first if they sell the requested category
-- "Verbatim text on garments (OCR)" tells you exactly what's in the wardrobe — if you see music artist names (Radiohead, The Cure, Oasis, etc.), this person buys from labels like Needles, Human Made, Stüssy, CPFM, Wacko Maria, Cactus Plant Flea Market, vintage Levi's — NOT from mainstream retail
+- "Text found on owned garments" tells you their aesthetic identity — if you see music artist names (Radiohead, The Cure, etc.) the person buys from labels like Needles, Human Made, Stüssy, CPFM. If you see pop culture / superhero / character graphics, they lean vintage-inspired streetwear labels. CRITICAL: do NOT use these as literal search terms — they represent what the user ALREADY OWNS. Never pick a brand because it sells the same graphic they already have.
 - The brand MUST actually sell this category of item
 - Prefer brands with active online stores (DTC or specialty retail — not Amazon/Walmart)
 - Most DTC fashion brands run on Shopify; note this in the "shopify" field

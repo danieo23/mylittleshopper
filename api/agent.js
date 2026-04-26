@@ -343,10 +343,29 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget, refinemen
       // Use keyword-filtered pool as long as ≥1 item matches — never fall back to wrong-category items.
       // Only revert to full scored pool when the slot has no specific keywords (generic slot).
       const kwPool = (slot.keywords?.length && kwFiltered.length === 0) ? scored : kwFiltered;
-      let pool = kwPool
+
+      // Semantic dedup: within a slot, if multiple products share the same first
+      // substantive word (brand name, character, specific noun), keep only the
+      // highest-scored one. Prevents 4 Superman shirts or 4 Stüssy variants
+      // from filling all slots when show_options=true.
+      const CONCEPT_STOPWORDS = new Set(['the','and','for','with','mens','womens','unisex','size','large','small','medium','color','style','vintage','distressed','graphic','classic','slim','relaxed','fitted','washed']);
+      const conceptKey = name => {
+        const words = (name ?? '').toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/)
+          .filter(w => w.length > 3 && !CONCEPT_STOPWORDS.has(w));
+        return words[0] ?? (name ?? '').slice(0, 8);
+      };
+      const seenConcepts = new Set();
+      const semanticDeduped = kwPool
         .filter(p => !dislikedNames.has(nameKey(p.name)))
         .sort((a, b) => b._score - a._score)
-        .slice(0, 20);
+        .filter(p => {
+          const ck = conceptKey(p.name);
+          if (seenConcepts.has(ck)) return false;
+          seenConcepts.add(ck);
+          return true;
+        });
+
+      let pool = semanticDeduped.slice(0, 20);
 
       // Refinement plan: filter out negative keywords and avoided colors post-scoring
       if (refinementPlan) {
@@ -793,6 +812,7 @@ Profile is still building — style tags are your primary signal:
   e.g. "${genderPrefix} relaxed ${styleTags?.slice(0,2).map(t => t.toLowerCase()).join(' ') ?? styleDefault} trousers casual"
 `}
 Cross-reference with wardrobe before building outfits — don't suggest items they likely already own based on their existing style.
+CRITICAL — never recommend something they already own: If their wardrobe includes a Superman tee, a Stüssy graphic, or any specific branded/character item, do NOT search for that same item. Translate it into aesthetic language instead: Superman tee → "vintage pop culture graphic tee", Stüssy scorpion → "Japanese streetwear graphic tee". The goal is similar vibe, not the same item.
 Prioritize aspiration gap items — these are things they want but don't have yet.
 
 ━━━ YOUR PROFILE IS ALWAYS ACTIVE — never wait to be told ━━━
