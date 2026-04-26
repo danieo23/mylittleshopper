@@ -404,6 +404,8 @@ export default function StyleVault() {
   const [dragOver, setDragOver]   = useState(false);
   const [analyzingWardrobe, setAnalyzingWardrobe] = useState(false);
   const [wardrobeAnalyzeMsg, setWardrobeAnalyzeMsg] = useState('');
+  const [wardrobeProfile, setWardrobeProfile]       = useState(null);
+  const [profileLoading, setProfileLoading]         = useState(false);
 
   // Multi-select move state
   const [selectMode, setSelectMode]   = useState(false);
@@ -443,10 +445,28 @@ export default function StyleVault() {
         .eq('user_id', me.id)
         .order('analyzed_at', { ascending: false });
       setAspirationItems(aspiration ?? []);
+
+      // Load wardrobe profile in background — non-blocking
+      fetch(`/api/wardrobe-profile?userId=${me.id}`)
+        .then(r => r.json())
+        .then(d => { if (d.profile) setWardrobeProfile(d.profile); })
+        .catch(() => {});
     } catch {
       // not authenticated
     } finally {
       setLoading(false);
+    }
+  };
+
+  const refreshProfile = async () => {
+    if (!userId || profileLoading) return;
+    setProfileLoading(true);
+    try {
+      const res = await fetch(`/api/wardrobe-profile?userId=${userId}`);
+      const d   = await res.json();
+      if (d.profile) setWardrobeProfile(d.profile);
+    } finally {
+      setProfileLoading(false);
     }
   };
 
@@ -936,6 +956,37 @@ export default function StyleVault() {
         )}
       </Section>
 
+      {/* What your wardrobe says about you */}
+      {(wardrobeProfile || items.some(i => i.style_category)) && (
+        <Section
+          title="What your wardrobe says about you"
+          subtitle="Pattern recognition across your analyzed items — style, culture, behavior."
+          action={
+            <button
+              onClick={refreshProfile}
+              disabled={profileLoading}
+              className="inline-flex items-center gap-2 px-4 py-2 border border-border text-muted-foreground text-xs uppercase tracking-widest hover:text-foreground hover:border-foreground/40 transition disabled:opacity-40"
+            >
+              {profileLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ArrowRight className="w-3.5 h-3.5" />}
+              {profileLoading ? 'Generating…' : 'Regenerate'}
+            </button>
+          }
+        >
+          {!wardrobeProfile && !profileLoading ? (
+            <p className="text-xs text-muted-foreground">
+              Analyze your photos first to unlock your style profile.
+            </p>
+          ) : profileLoading && !wardrobeProfile ? (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              Building your profile…
+            </div>
+          ) : wardrobeProfile ? (
+            <WardrobeProfileDisplay profile={wardrobeProfile} />
+          ) : null}
+        </Section>
+      )}
+
       {/* Pinterest boards */}
       <Section title="Pinterest boards" subtitle="Add boards — mark each as Aspiration (style inspo) or Own it (outfits you actually wear). Lychee treats them differently in your Style DNA.">
         <div className="space-y-3 mb-4">
@@ -1220,6 +1271,73 @@ export default function StyleVault() {
           ))}
         </div>
       </Section>
+    </div>
+  );
+}
+
+function WardrobeProfileDisplay({ profile }) {
+  const { insights = [], shopping_profile } = profile;
+  return (
+    <div className="space-y-6">
+      {/* Insight cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {insights.map((ins, i) => (
+          <div key={i} className="border border-border bg-card p-4">
+            <div className="flex items-start gap-3">
+              <span className="text-xl leading-none mt-0.5">{ins.emoji}</span>
+              <div>
+                <h3 className="font-serif text-base text-foreground mb-1">{ins.title}</h3>
+                <p className="text-xs text-muted-foreground leading-relaxed">{ins.body}</p>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Shopping profile summary */}
+      {shopping_profile && (
+        <div className="border border-border bg-card p-5">
+          <h3 className="font-serif text-lg text-foreground mb-4">Shopping Profile</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {shopping_profile.loves?.length > 0 && (
+              <div>
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-2">Loves</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {shopping_profile.loves.map((item, i) => (
+                    <span key={i} className="px-2 py-0.5 bg-primary/10 border border-primary/20 text-primary text-[11px]">{item}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {shopping_profile.brands?.length > 0 && (
+              <div>
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-2">Brands you'd respond to</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {shopping_profile.brands.map((b, i) => (
+                    <span key={i} className="px-2 py-0.5 border border-border text-foreground text-[11px]">{b}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {shopping_profile.gravitates_toward?.length > 0 && (
+              <div>
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-2">Gravitates toward</p>
+                <ul className="space-y-0.5">
+                  {shopping_profile.gravitates_toward.map((g, i) => (
+                    <li key={i} className="text-xs text-muted-foreground">— {g}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {shopping_profile.shopping_behavior && (
+              <div>
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-2">Shopping behavior</p>
+                <p className="text-xs text-muted-foreground italic">{shopping_profile.shopping_behavior}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
