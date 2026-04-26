@@ -614,7 +614,9 @@ export default function StyleVault() {
       } else if (data.alreadyDone) {
         setWardrobeAnalyzeMsg('All photos already analyzed — your Style DNA is up to date.');
       } else {
-        setWardrobeAnalyzeMsg(`Done — ${data.analyzed} photo${data.analyzed !== 1 ? 's' : ''} analyzed.`);
+        setWardrobeAnalyzeMsg(`Done — ${data.analyzed} photo${data.analyzed !== 1 ? 's' : ''} analyzed. Updating your style profile…`);
+        // Regenerate the "What your wardrobe says" profile with the fresh OCR data
+        refreshProfile();
       }
     } catch (err) {
       setWardrobeAnalyzeMsg(`Something went wrong: ${err.message}`);
@@ -957,7 +959,7 @@ export default function StyleVault() {
       </Section>
 
       {/* What your wardrobe says about you */}
-      {(wardrobeProfile || items.some(i => i.style_category)) && (
+      {(wardrobeProfile || items.filter(i => i.category === 'wardrobe').length >= 3) && (
         <Section
           title="What your wardrobe says about you"
           subtitle="Pattern recognition across your analyzed items — style, culture, behavior."
