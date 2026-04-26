@@ -42,7 +42,9 @@ function hexToBucket(hex) {
   return 'pink';
 }
 
-// Build a compact human-readable style brief from DNA for brand selection
+// Build a compact human-readable style brief from DNA for brand selection.
+// Includes OCR texts (verbatim garment text), cultural signals, and
+// profile-recommended brands so every search starts from the full picture.
 function buildStyleBrief(styleDna, query, category) {
   if (!styleDna) return `Item needed: ${query} (${category})`;
 
@@ -51,8 +53,12 @@ function buildStyleBrief(styleDna, query, category) {
     ...(styleDna.secondary_colors ?? []).map(hexToBucket),
   ].filter(Boolean))].slice(0, 4);
 
-  // Cultural profile is stored inside explicit_dislikes to avoid DB migration
-  const cultural = styleDna.explicit_dislikes?.cultural_profile ?? [];
+  const dislikes  = styleDna.explicit_dislikes ?? {};
+  const cultural  = dislikes.cultural_profile ?? [];
+  // Verbatim text read off garments via OCR — band names, logos, slogans
+  const ocrTexts  = dislikes.ocr_summary ?? [];
+  // Brands identified by the wardrobe profile as the best aesthetic matches
+  const profBrands = dislikes.profile_recommended_brands ?? [];
 
   const parts = [
     `Primary aesthetic: ${styleDna.primary_style_category ?? 'not specified'}`,
@@ -61,9 +67,14 @@ function buildStyleBrief(styleDna, query, category) {
       : null,
     `Fit preference: ${styleDna.dominant_fit ?? 'not specified'}`,
     colors.length ? `Core palette: ${colors.join(', ')}` : null,
+    ocrTexts.length
+      ? `Verbatim text on garments (OCR): ${ocrTexts.join(' | ')}` : null,
     cultural.length ? `Cultural signals: ${cultural.join(', ')}` : null,
     styleDna.brand_affinities?.length
       ? `Wardrobe brand signals: ${styleDna.brand_affinities.slice(0, 5).join(', ')}`
+      : null,
+    profBrands.length
+      ? `Profile-recommended brands (highest aesthetic match): ${profBrands.join(', ')}`
       : null,
     `Formality range: ${styleDna.formality_range_min ?? 1}–${styleDna.formality_range_max ?? 5}/10`,
     `Item needed: ${query} (${category})`,
@@ -77,6 +88,8 @@ function buildStyleBrief(styleDna, query, category) {
 async function selectBrands(styleBrief, query, category, maxPrice) {
   const budgetNote = maxPrice ? ` Budget ceiling: $${maxPrice}.` : '';
 
+  const profBrands = styleBrief.match(/Profile-recommended brands[^\n]*:\s*([^\n]+)/)?.[1]?.split(',').map(s => s.trim()).filter(Boolean) ?? [];
+
   const prompt = `You are a fashion brand expert with deep knowledge of brand aesthetics. Based on the user's style profile, select the 2-3 brands whose current catalog would have the highest density of matching items for this specific purchase.
 
 USER STYLE PROFILE:
@@ -85,10 +98,10 @@ ${styleBrief}
 TASK: Find "${query}" in the "${category}" category.${budgetNote}
 
 Selection rules:
+- The "Profile-recommended brands" line lists brands already identified as the best aesthetic match for this wardrobe — prefer these first if they sell the requested category
+- "Verbatim text on garments (OCR)" tells you exactly what's in the wardrobe — if you see music artist names (Radiohead, The Cure, Oasis, etc.), this person buys from labels like Needles, Human Made, Stüssy, CPFM, Wacko Maria, Cactus Plant Flea Market, vintage Levi's — NOT from mainstream retail
 - The brand MUST actually sell this category of item
-- Match the aesthetic precisely — this is style-first selection, not just category matching
-- Prefer brands with active online stores (DTC preferred over department stores)
-- If the wardrobe shows specific brand names (band names, logos), treat those as subculture signals that indicate what aesthetic family to stay within
+- Prefer brands with active online stores (DTC or specialty retail — not Amazon/Walmart)
 - Most DTC fashion brands run on Shopify; note this in the "shopify" field
 - Only suggest brands that sell at the stated budget
 

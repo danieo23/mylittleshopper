@@ -101,6 +101,14 @@ export async function synthesizeStyleDna(userId) {
   );
   const culturalProfile = topN(culturalFreq, 8).filter(Boolean);
 
+  // OCR summary: verbatim text found on garments, deduplicated.
+  // Stored so search_products can use the actual band/brand names as brand-selection context.
+  const ocrSummary = [...new Set(
+    [...(wardrobe ?? []), ...ownedPins]
+      .map(i => i.ocr_text)
+      .filter(Boolean)
+  )].slice(0, 20);
+
   // Aspiration gap: style categories in pure aspiration but absent from owned items
   // (wardrobe photos + owned Pinterest boards = "what I actually wear")
   const ownedStyles = new Set([
@@ -135,6 +143,7 @@ export async function synthesizeStyleDna(userId) {
     explicit_dislikes: {
       ...(existingDna?.explicit_dislikes ?? {}),
       cultural_profile: culturalProfile,
+      ocr_summary:      ocrSummary,
     },
     aspiration_gap:           aspirationGap,
     // Preserve per-category price sensitivity learned from approvals

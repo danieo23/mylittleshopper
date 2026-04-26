@@ -201,6 +201,26 @@ Generate exactly 5 insights that tell a coherent story about this person's style
     if (!match) throw new Error('No JSON returned');
 
     const profile = JSON.parse(match[0]);
+
+    // Write the recommended brands back into style_dna so every search query
+    // can use these expert picks as the primary brand pool — fire-and-forget.
+    if (profile.shopping_profile?.brands?.length) {
+      supabase.from('style_dna')
+        .select('explicit_dislikes')
+        .eq('user_id', userId)
+        .single()
+        .then(({ data: dna }) => {
+          const updated = {
+            ...(dna?.explicit_dislikes ?? {}),
+            profile_recommended_brands: profile.shopping_profile.brands,
+          };
+          return supabase.from('style_dna')
+            .update({ explicit_dislikes: updated })
+            .eq('user_id', userId);
+        })
+        .catch(() => {});
+    }
+
     return res.status(200).json({ profile, itemCount: stats.total });
   } catch (err) {
     console.error('[wardrobe-profile]', err.message);
