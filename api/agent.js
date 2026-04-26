@@ -337,7 +337,9 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget, refinemen
       const kwFiltered = slot.keywords?.length
         ? scored.filter(p => slot.keywords.some(kw => (p.name ?? '').toLowerCase().includes(kw)))
         : scored;
-      const kwPool = kwFiltered.length >= count * 2 ? kwFiltered : scored;
+      // Use keyword-filtered pool as long as ≥1 item matches — never fall back to wrong-category items.
+      // Only revert to full scored pool when the slot has no specific keywords (generic slot).
+      const kwPool = (slot.keywords?.length && kwFiltered.length === 0) ? scored : kwFiltered;
       let pool = kwPool
         .filter(p => !dislikedNames.has(nameKey(p.name)))
         .sort((a, b) => b._score - a._score)

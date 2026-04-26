@@ -114,12 +114,15 @@ Return ONLY a JSON array, no markdown, no explanation:
   }
 }
 
-// Common Shopify collection slugs per category — tried in order until one returns products
+// Common Shopify collection slugs per category — tried in order until one returns products.
+// "all" is intentionally excluded for specific categories: fetching all products returns mixed
+// types (pants in a tee search, etc.) and the keyword filter can't reliably clean that up.
+// If no slug matches, fetchShopifyCatalog returns [] and the brand-targeted web search runs instead.
 const SHOPIFY_COLLECTION_MAP = {
-  tops:        ['t-shirts', 'tops', 'shirts', 'graphic-tees', 'tees', 'all'],
-  bottoms:     ['bottoms', 'pants', 'jeans', 'denim', 'all'],
-  shoes:       ['shoes', 'footwear', 'sneakers', 'all'],
-  outerwear:   ['outerwear', 'jackets', 'coats', 'layers', 'all'],
+  tops:        ['t-shirts', 'tops', 'shirts', 'graphic-tees', 'tees', 'knitwear', 'sweatshirts'],
+  bottoms:     ['bottoms', 'pants', 'jeans', 'denim', 'trousers', 'shorts'],
+  shoes:       ['shoes', 'footwear', 'sneakers', 'boots', 'sandals'],
+  outerwear:   ['outerwear', 'jackets', 'coats', 'layers'],
   accessories: ['accessories', 'all'],
   dress:       ['dresses', 'all'],
 };
@@ -307,7 +310,31 @@ function parseProductJson(response, defaultBrand) {
   } catch { return []; }
 }
 
-// Filter Shopify catalog by core item keywords (strip style descriptors first)
+// Hard-block products that clearly belong to the wrong category.
+// Applied after every search (Shopify, brand web, generic web) so pants
+// can never appear in a tops slot, shoes in a bottoms slot, etc.
+// If the filter removes everything, return [] so the fallback generic search runs.
+const CATEGORY_BLOCKLIST = {
+  tops:      /\b(pants?|trousers?|jeans?|denim\b(?! jacket| shirt)|shorts?|leggings?|joggers?|sweatpants?|chinos?|skirts?|loafers?|sneakers?|boots?|sandals?|shoes?)\b/i,
+  bottoms:   /\b(t-?shirts?|tees?\b|blouses?|polos?|henley|henleys?|hoodie|hoodies?|sweatshirt|sweatshirts?|cardigans?|sweater|sweaters?|sneakers?|boots?|sandals?|shoes?|loafers?)\b/i,
+  shoes:     /\b(pants?|trousers?|jeans?|t-?shirts?|tees?\b|tops?|blouses?|jackets?|coats?|hoodies?)\b/i,
+  outerwear: /\b(pants?|trousers?|jeans?|shorts?|sneakers?|sandals?|loafers?|t-?shirts?|tees?\b)\b/i,
+};
+
+function hardCategoryFilter(products, category) {
+  const blocklist = CATEGORY_BLOCKLIST[category];
+  if (!blocklist) return products;
+  const safe = products.filter(p => !blocklist.test(p.name ?? ''));
+  if (safe.length === 0 && products.length > 0) {
+    console.warn(`[category-filter] all ${products.length} results blocked for "${category}" — likely wrong category from source`);
+    return []; // Return empty; triggers fallback generic search
+  }
+  return safe;
+}
+
+// Filter by core item keywords from the search query (strip style descriptors first).
+// Returns matched items, or the original list if no recognizable keywords remain after stripping.
+// Never falls back to the full pool — wrong-category items should be caught by hardCategoryFilter.
 const STYLE_STRIP = /\b(men'?s?|women'?s?|unisex|streetwear|minimal|vintage|oversized|relaxed|slim|baggy|loose|black|white|navy|gray|grey|beige|fitted|tailored|washed|faded|dark|light|casual|formal|basic|classic)\b/gi;
 
 function filterByItemKeywords(products, query) {
@@ -323,8 +350,8 @@ function filterByItemKeywords(products, query) {
     core.some(kw => (p.name ?? '').toLowerCase().includes(kw))
   );
 
-  // Keep filter only if it leaves at least 2 products — don't wipe the pool
-  return matches.length >= 2 ? matches : products;
+  // Use matched items if any found; otherwise return all (style keywords may not appear in product names)
+  return matches.length >= 1 ? matches : products;
 }
 
 /**
@@ -391,9 +418,13 @@ export async function searchProducts({ query, category, maxPrice, countryCode = 
     allProducts.push(...fallback);
   }
 
+  // Hard-remove wrong-category items that slipped through any source
+  const categorySafe = hardCategoryFilter(allProducts, category);
+  const pool = categorySafe.length >= 3 ? categorySafe : allProducts;
+
   // Deduplicate by normalized name
   const seen   = new Set();
-  const unique = allProducts.filter(p => {
+  const unique = pool.filter(p => {
     const k = (p.name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40);
     if (seen.has(k)) return false;
     seen.add(k);
