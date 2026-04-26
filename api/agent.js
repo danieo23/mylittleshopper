@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { getUserProfile }       from '../tools/get_user_profile.js';
-import { searchProducts }       from '../tools/search_products.js';
+import { searchProducts, hardCategoryFilter } from '../tools/search_products.js';
 import { scoreProductMatch }    from '../tools/score_product_match.js';
 import { buildOutfits }         from '../tools/build_outfits.js';
 import { checkOutfitMultiplier } from '../tools/check_outfit_multiplier.js';
@@ -317,14 +317,17 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget, refinemen
       const textProducts  = textResults.flat();
 
       // Merge: Lens first (preferred), then text (fills gaps)
-      // Deduplicate across both streams by normalized name
+      // Deduplicate across both streams by normalized name, then hard-filter
+      // any items that are clearly the wrong category (pants in a tops slot, etc.)
       const seen   = new Set();
-      const unique = [...lensProducts, ...textProducts].filter(p => {
+      const merged = [...lensProducts, ...textProducts].filter(p => {
         const k = nameKey(p.name);
         if (seen.has(k)) return false;
         seen.add(k);
         return true;
       });
+      const categoryFiltered = hardCategoryFilter(merged, slot.category);
+      const unique = categoryFiltered.length >= 1 ? categoryFiltered : merged;
 
       // Score all products; Lens results receive the visual bonus on top
       const scored = unique.map(p => ({

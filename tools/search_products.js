@@ -321,7 +321,7 @@ const CATEGORY_BLOCKLIST = {
   outerwear: /\b(pants?|trousers?|jeans?|shorts?|sneakers?|sandals?|loafers?|t-?shirts?|tees?\b)\b/i,
 };
 
-function hardCategoryFilter(products, category) {
+export function hardCategoryFilter(products, category) {
   const blocklist = CATEGORY_BLOCKLIST[category];
   if (!blocklist) return products;
   const safe = products.filter(p => !blocklist.test(p.name ?? ''));
@@ -418,9 +418,13 @@ export async function searchProducts({ query, category, maxPrice, countryCode = 
     allProducts.push(...fallback);
   }
 
-  // Hard-remove wrong-category items that slipped through any source
+  // Hard-remove wrong-category items that slipped through any source.
+  // Prefer 1 correct item over 10 wrong-category ones — returning fewer
+  // triggers the agent to try again rather than showing irrelevant results.
+  // Only fall back to unfiltered if categorySafe is completely empty
+  // (items may use unusual naming that the blocklist misidentifies).
   const categorySafe = hardCategoryFilter(allProducts, category);
-  const pool = categorySafe.length >= 3 ? categorySafe : allProducts;
+  const pool = categorySafe.length >= 1 ? categorySafe : allProducts;
 
   // Deduplicate by normalized name
   const seen   = new Set();
