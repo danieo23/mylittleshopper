@@ -308,7 +308,7 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget, refinemen
           budget
         ),
         ...textQueries.map(q =>
-          searchProducts({ query: q.trim(), category: slot.category, maxPrice: budget, countryCode: userProfile.countryCode }).catch(() => [])
+          searchProducts({ query: q.trim(), category: slot.category, maxPrice: budget, countryCode: userProfile.countryCode, styleDna: dna }).catch(() => [])
         ),
       ]);
 
@@ -921,7 +921,7 @@ async function executeTool(toolName, toolInput, userId, userProfile, excludeProd
       } else if (!/^(women'?s?|men'?s?|unisex)\b/i.test(query)) {
         query = `${gPrefix} ${query}`;
       }
-      const results = await searchProducts({ ...toolInput, query, countryCode: userProfile.countryCode });
+      const results = await searchProducts({ ...toolInput, query, countryCode: userProfile.countryCode, styleDna: userProfile.styleDna });
       if (!results.length) return [];
       const scored = results.map(p => ({ ...p, ...scoreProductMatch(p, userProfile.styleDna, occasion) }));
       // Filter out the excluded product (swap reroll) — normalize both names for fuzzy match

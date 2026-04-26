@@ -36,9 +36,10 @@ function buildFrequencyMap(items, getter, weightFn = () => 1) {
  * Writes the result to the style_dna table.
  */
 export async function synthesizeStyleDna(userId) {
-  const [{ data: wardrobe }, { data: aspirationRaw }] = await Promise.all([
+  const [{ data: wardrobe }, { data: aspirationRaw }, { data: existingDna }] = await Promise.all([
     supabase.from('wardrobe_items').select('*').eq('user_id', userId),
     supabase.from('aspiration_items').select('*').eq('user_id', userId),
+    supabase.from('style_dna').select('explicit_dislikes,avoided_colors,brand_rejections,per_category_price_sensitivity').eq('user_id', userId).single(),
   ]);
 
   // pinterest_owned boards = outfits the user actually wears → treated as wardrobe
@@ -90,6 +91,25 @@ export async function synthesizeStyleDna(userId) {
   const brandFreq = buildFrequencyMap(all, i => i.brand, wFn);
   const brandAffinities = topN(brandFreq, 10);
 
+  // Cultural profile: aggregate cultural_signals from items + derive from brand names.
+  // cultural_signals is a new field from the updated OCR prompt — may be absent on older items.
+  // We also infer subculture signals from brand names themselves (band tees, skate brands, etc.)
+  const culturalFreq = buildFrequencyMap(
+    [...(wardrobe ?? []), ...ownedPins],
+    i => {
+      const signals = [...(i.cultural_signals ?? [])];
+      // Derive cultural signal from brand name if it looks like a band/artist/subculture
+      const brand = (i.brand ?? '').toLowerCase();
+      if (brand && !/nike|adidas|h&m|zara|gap|uniqlo|levis|ralph|tommy|polo|gucci|prada|lv|supreme|carhartt|champion/.test(brand)) {
+        // Non-mainstream brand visible on garment = likely band, artist, or niche label
+        if (!signals.includes('brand-logo')) signals.push('brand-logo');
+      }
+      return signals;
+    },
+    wFn
+  );
+  const culturalProfile = topN(culturalFreq, 8).filter(Boolean);
+
   // Aspiration gap: style categories in pure aspiration but absent from owned items
   // (wardrobe photos + owned Pinterest boards = "what I actually wear")
   const ownedStyles = new Set([
@@ -110,7 +130,7 @@ export async function synthesizeStyleDna(userId) {
     user_id:                  userId,
     primary_colors:           primaryColors,
     secondary_colors:         secondaryColors,
-    avoided_colors:           [],             // populated via rejection feedback
+    avoided_colors:           existingDna?.avoided_colors ?? [],
     dominant_fit:             dominantFit,
     fit_consistency_score:    fitConsistencyScore,
     primary_style_category:   primaryStyleCategory ?? null,
@@ -118,10 +138,16 @@ export async function synthesizeStyleDna(userId) {
     formality_range_min:      formalityMin,
     formality_range_max:      formalityMax,
     brand_affinities:         brandAffinities,
-    brand_rejections:         [],
-    explicit_dislikes:        {},
+    brand_rejections:         existingDna?.brand_rejections ?? [],
+    // Preserve learned dislike data from feedback; only update the cultural_profile key.
+    // Without this merge, re-synthesizing would erase all rejection signals.
+    explicit_dislikes: {
+      ...(existingDna?.explicit_dislikes ?? {}),
+      cultural_profile: culturalProfile,
+    },
     aspiration_gap:           aspirationGap,
-    per_category_price_sensitivity: {},
+    // Preserve per-category price sensitivity learned from approvals
+    per_category_price_sensitivity: existingDna?.per_category_price_sensitivity ?? {},
     overall_confidence_score: overallConfidenceScore,
     last_synthesized_at:      new Date().toISOString(),
   };
