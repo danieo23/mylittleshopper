@@ -123,8 +123,21 @@ function buildWardrobeStats(items) {
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).end();
 
-  const { userId } = req.query;
+  const { userId, force } = req.query;
   if (!userId) return res.status(400).json({ error: 'userId required' });
+
+  // On normal page load: return cache if it exists, return null if it doesn't.
+  // Only run Claude when force=true (Regenerate button or post-analysis auto-refresh).
+  if (force !== 'true') {
+    const { data: dna } = await supabase
+      .from('style_dna')
+      .select('explicit_dislikes')
+      .eq('user_id', userId)
+      .single();
+    const cached = dna?.explicit_dislikes?.wardrobe_profile_cache;
+    if (cached) return res.status(200).json({ profile: cached, cached: true });
+    return res.status(200).json({ profile: null, reason: 'not_generated' });
+  }
 
   const { data: items } = await supabase
     .from('wardrobe_items')
@@ -220,6 +233,22 @@ Generate exactly 5 insights that tell a coherent story about this person's style
         })
         .catch(() => {});
     }
+
+    // Cache the profile so subsequent loads skip Claude entirely
+    supabase.from('style_dna')
+      .select('explicit_dislikes')
+      .eq('user_id', userId)
+      .single()
+      .then(({ data: dna }) => {
+        const updated = {
+          ...(dna?.explicit_dislikes ?? {}),
+          wardrobe_profile_cache: profile,
+        };
+        return supabase.from('style_dna')
+          .update({ explicit_dislikes: updated })
+          .eq('user_id', userId);
+      })
+      .catch(() => {});
 
     return res.status(200).json({ profile, itemCount: stats.total });
   } catch (err) {

@@ -603,19 +603,26 @@ export default function Dashboard() {
     if (phraseRef.current) { clearInterval(phraseRef.current); phraseRef.current = null; }
   };
 
-  const animateLastMessage = (fullText) => {
+  const animateLastMessage = (fullText, choices = null) => {
     if (animRef.current) clearInterval(animRef.current);
     const words = fullText.split(' ');
     let i = 0;
     animRef.current = setInterval(() => {
       i++;
+      const done = i >= words.length;
       setMessages(m => {
         const copy = [...m];
         const last = copy[copy.length - 1];
-        if (last?.role === 'ai') copy[copy.length - 1] = { ...last, text: words.slice(0, i).join(' ') };
+        if (last?.role === 'ai') {
+          copy[copy.length - 1] = {
+            ...last,
+            text: words.slice(0, i).join(' '),
+            ...(done && choices ? { choices } : {}),
+          };
+        }
         return copy;
       });
-      if (i >= words.length) clearInterval(animRef.current);
+      if (done) clearInterval(animRef.current);
     }, 18);
   };
 
@@ -726,7 +733,8 @@ export default function Dashboard() {
       setLoading(false);
 
       const replyText = data.reply || (data.outfits ? '' : 'Something went wrong — please try again.');
-      const aiMsg     = { role: 'ai', text: replyText, outfits: data.outfits ?? null, wardrobeRedo: data.wardrobeRedo ?? false, choices: data.choices ?? null };
+      const choices   = data.choices ?? null;
+      const aiMsg     = { role: 'ai', text: replyText, outfits: data.outfits ?? null, wardrobeRedo: data.wardrobeRedo ?? false, choices };
 
       setMessages(prev => {
         const fullMsgs = [...prev, aiMsg];
@@ -734,7 +742,7 @@ export default function Dashboard() {
         return [...prev, { role: 'ai', text: '', outfits: data.outfits ?? null, wardrobeRedo: data.wardrobeRedo ?? false }];
       });
 
-      animateLastMessage(replyText);
+      animateLastMessage(replyText, choices);
 
     } catch (err) {
       stopPhraseLoop();

@@ -141,51 +141,49 @@ const SHOPIFY_COLLECTION_MAP = {
 };
 
 // Stage 5a: Fetch products directly from a brand's Shopify catalog JSON endpoint.
-// Returns clean structured data — no HTML parsing, no scraping.
+// All collection slugs are tried in parallel — first one with products wins.
 async function fetchShopifyCatalog(domain, category, maxPrice) {
   const collections = SHOPIFY_COLLECTION_MAP[category] ?? ['all'];
 
-  for (const col of collections) {
-    try {
-      const url = `https://${domain}/collections/${col}/products.json?limit=20`;
-      const res = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
-        signal:  AbortSignal.timeout(8000),
-      });
-      if (!res.ok) continue;
-      const data = await res.json();
-      if (!data?.products?.length) continue;
+  const tryCollection = async (col) => {
+    const url = `https://${domain}/collections/${col}/products.json?limit=20`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+      signal:  AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`${res.status}`);
+    const data = await res.json();
+    if (!data?.products?.length) throw new Error('empty');
+    const products = data.products
+      .filter(p => {
+        if (!maxPrice) return true;
+        const price = parseFloat(p.variants?.[0]?.price ?? '0');
+        return price > 0 && price <= maxPrice;
+      })
+      .map(p => ({
+        id:                   `shopify-${domain}-${p.id}`,
+        name:                 p.title,
+        price:                parseFloat(p.variants?.[0]?.price ?? '0') || null,
+        store:                domain.replace('www.', '').split('.')[0],
+        image_url:            p.images?.[0]?.src ?? null,
+        all_images:           (p.images ?? []).map(i => i.src),
+        product_url:          `https://${domain}/products/${p.handle}`,
+        serpapi_product_link: null,
+        colors:               null,
+        style_category:       null,
+        fit_type:             null,
+        brand:                p.vendor ?? null,
+      }));
+    if (!products.length) throw new Error('no matching products');
+    return { col, products };
+  };
 
-      const products = data.products
-        .filter(p => {
-          if (!maxPrice) return true;
-          const price = parseFloat(p.variants?.[0]?.price ?? '0');
-          return price > 0 && price <= maxPrice;
-        })
-        .map(p => ({
-          id:                   `shopify-${domain}-${p.id}`,
-          name:                 p.title,
-          price:                parseFloat(p.variants?.[0]?.price ?? '0') || null,
-          store:                domain.replace('www.', '').split('.')[0],
-          image_url:            p.images?.[0]?.src ?? null,
-          all_images:           (p.images ?? []).map(i => i.src),
-          product_url:          `https://${domain}/products/${p.handle}`,
-          serpapi_product_link: null,
-          colors:               null,
-          style_category:       null,
-          fit_type:             null,
-          brand:                p.vendor ?? null,
-        }));
-
-      if (products.length > 0) {
-        console.log(`[shopify] ${domain}/${col}: ${products.length} products`);
-        return products;
-      }
-    } catch (_) {
-      // Try next collection slug
-    }
-  }
-  return [];
+  const results = await Promise.allSettled(collections.map(tryCollection));
+  const first   = results.find(r => r.status === 'fulfilled');
+  if (!first) return [];
+  const { col, products } = first.value;
+  console.log(`[shopify] ${domain}/${col}: ${products.length} products`);
+  return products;
 }
 
 // Stage 5b: Brand-targeted web search fallback for non-Shopify brands.
@@ -222,7 +220,7 @@ Return ONLY a JSON array of up to 8 products — no markdown, just the array:
   }
 
   let turns = 0;
-  while (response.stop_reason === 'tool_use' && turns++ < 4) {
+  while (response.stop_reason === 'tool_use' && turns++ < 2) {
     const toolUses = response.content.filter(b => b.type === 'tool_use');
     messages.push({ role: 'assistant', content: response.content });
     messages.push({ role: 'user', content: toolUses.map(b => ({
@@ -276,7 +274,7 @@ Return ONLY a JSON array of up to 12 products — no markdown, no explanation, j
   }
 
   let turns = 0;
-  while (response.stop_reason === 'tool_use' && turns++ < 6) {
+  while (response.stop_reason === 'tool_use' && turns++ < 3) {
     const toolUses = response.content.filter(b => b.type === 'tool_use');
     messages.push({ role: 'assistant', content: response.content });
     messages.push({ role: 'user', content: toolUses.map(b => ({
@@ -400,25 +398,24 @@ export async function searchProducts({ query, category, maxPrice, countryCode = 
     const selectedBrands = await selectBrands(styleBrief, query, category, maxPrice);
     console.log(`[brand-select] "${query}": ${selectedBrands.map(b => `${b.name} (${b.domain})`).join(', ') || 'none'}`);
 
-    // Stage 5: Fetch from each brand — Shopify first, web search fallback
-    for (const brand of selectedBrands.slice(0, 2)) {
+    // Stage 5: Fetch from both brands in parallel — Shopify first, web search fallback per brand
+    const fetchBrand = async (brand) => {
+      if (!brand.domain) return [];
       let brandProducts = [];
-
-      if (brand.shopify !== false && brand.domain) {
+      if (brand.shopify !== false) {
         brandProducts = await fetchShopifyCatalog(brand.domain, category, maxPrice);
       }
-
-      if (brandProducts.length < 3 && brand.domain) {
+      if (brandProducts.length < 3) {
         const fallback = await webSearchForBrand(brand.name, brand.domain, query, category, maxPrice);
         brandProducts = brandProducts.length >= fallback.length ? brandProducts : fallback;
       }
-
       brandProducts = filterByItemKeywords(brandProducts, query);
       console.log(`[brand-catalog] ${brand.name}: ${brandProducts.length} matching products`);
-      allProducts.push(...brandProducts);
+      return brandProducts;
+    };
 
-      if (allProducts.length >= 12) break;
-    }
+    const brandResults = await Promise.all(selectedBrands.slice(0, 2).map(fetchBrand));
+    for (const bp of brandResults) allProducts.push(...bp);
   }
 
   // Supplement with generic web search if brand catalog was insufficient

@@ -462,7 +462,7 @@ export default function StyleVault() {
     if (!userId || profileLoading) return;
     setProfileLoading(true);
     try {
-      const res = await fetch(`/api/wardrobe-profile?userId=${userId}`);
+      const res = await fetch(`/api/wardrobe-profile?userId=${userId}&force=true`);
       const d   = await res.json();
       if (d.profile) setWardrobeProfile(d.profile);
     } finally {
@@ -970,22 +970,36 @@ export default function StyleVault() {
               className="inline-flex items-center gap-2 px-4 py-2 border border-border text-muted-foreground text-xs uppercase tracking-widest hover:text-foreground hover:border-foreground/40 transition disabled:opacity-40"
             >
               {profileLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ArrowRight className="w-3.5 h-3.5" />}
-              {profileLoading ? 'Generating…' : 'Regenerate'}
+              {profileLoading ? 'Generating…' : wardrobeProfile ? 'Regenerate' : 'Generate'}
             </button>
           }
         >
-          {!wardrobeProfile && !profileLoading ? (
-            <p className="text-xs text-muted-foreground">
-              Analyze your photos first to unlock your style profile.
-            </p>
-          ) : profileLoading && !wardrobeProfile ? (
+          {profileLoading && !wardrobeProfile ? (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
               Building your profile…
             </div>
           ) : wardrobeProfile ? (
             <WardrobeProfileDisplay profile={wardrobeProfile} />
-          ) : null}
+          ) : (
+            <div className="flex flex-col gap-3">
+              <p className="text-xs text-muted-foreground">
+                {items.filter(i => i.category === 'wardrobe').length >= 3
+                  ? 'Your photos are ready — generate your style profile.'
+                  : 'Analyze your photos first to unlock your style profile.'}
+              </p>
+              {items.filter(i => i.category === 'wardrobe').length >= 3 && (
+                <button
+                  onClick={refreshProfile}
+                  disabled={profileLoading}
+                  className="self-start inline-flex items-center gap-2 px-4 py-2 bg-foreground text-background text-xs uppercase tracking-widest hover:opacity-80 transition disabled:opacity-40"
+                >
+                  <ArrowRight className="w-3.5 h-3.5" />
+                  Generate profile
+                </button>
+              )}
+            </div>
+          )}
         </Section>
       )}
 
