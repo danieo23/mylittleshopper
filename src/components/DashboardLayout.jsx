@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { ShoppingBag, Shirt, PackageCheck, LogOut, Menu, X, User, ChevronDown, Check } from 'lucide-react';
+import { ShoppingBag, Shirt, PackageCheck, LogOut, Menu, X, User, ChevronDown, Check, Sparkles } from 'lucide-react';
 import { supabase } from '@/api/client';
 
 const NAV = [
-  { to: '/dashboard',    icon: ShoppingBag,  label: 'My Shopper' },
-  { to: '/style-vault',  icon: Shirt,        label: 'Style Vault' },
-  { to: '/orders',       icon: PackageCheck, label: 'My Orders' },
+  { to: '/dashboard',        icon: ShoppingBag,  label: 'My Shopper' },
+  { to: '/style-vault',      icon: Shirt,        label: 'Style Vault' },
+  { to: '/wardrobe-results', icon: Sparkles,     label: 'Shopping Results' },
+  { to: '/orders',           icon: PackageCheck, label: 'My Orders' },
 ];
 
 const COUNTRIES = [

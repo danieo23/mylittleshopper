@@ -72,6 +72,8 @@ async function analyzeWardrobe(userId) {
       occasion_suitability: result.occasion_suitability,
       ocr_text:             result.ocr_text ?? null,
       cultural_signals:     result.cultural_signals ?? [],
+      wash_treatment:       result.wash_treatment ?? null,
+      graphic_present:      !!(result.ocr_text || (result.cultural_signals ?? []).some(s => /graphic|logo|text|print|band tee/i.test(s))),
       analyzed:             true,
     }).eq('id', item.id);
     analyzed++;

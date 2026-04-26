@@ -151,6 +151,33 @@ alter table style_profiles add column if not exists age_range text;
 alter table wardrobe_items add column if not exists item_type text;
 alter table wardrobe_items add column if not exists public_url text;
 
+-- Extended garment analysis fields (populated by analyze.js re-analysis)
+alter table wardrobe_items add column if not exists wash_treatment text;
+alter table wardrobe_items add column if not exists graphic_present boolean;
+alter table wardrobe_items add column if not exists condition_guess text;
+
+-- Product matches: one matched real product per wardrobe item
+create table if not exists product_matches (
+  id                uuid primary key default gen_random_uuid(),
+  wardrobe_item_id  uuid unique references wardrobe_items(id) on delete cascade,
+  user_id           uuid references auth.users(id) on delete cascade,
+  product_name      text,
+  brand_name        text,
+  price             numeric,
+  currency          text default 'USD',
+  image_url         text,
+  product_url       text,
+  store_url         text,
+  match_score       integer,
+  match_reason      text,
+  is_top_pick       boolean default false,
+  scraped_at        timestamptz,
+  created_at        timestamptz default now()
+);
+
+alter table product_matches enable row level security;
+create policy "own data" on product_matches for all using (auth.uid() = user_id);
+
 -- ─── Row Level Security ───────────────────────────────────────────
 
 alter table users              enable row level security;
