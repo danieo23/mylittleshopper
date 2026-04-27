@@ -364,7 +364,7 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget, refinemen
         ...textQueries.map(q =>
           cap(
             searchProducts({ query: q.trim(), category: slot.category, maxPrice: budget, countryCode: userProfile.countryCode, styleDna: dna, excludedBrands: [...usedBrands] }).catch(() => []),
-            12000,
+            20000,
             []
           )
         ),

@@ -426,8 +426,9 @@ export async function searchProducts({ query, category, maxPrice, countryCode = 
       return brandProducts;
     };
 
-    // Run all selected brands in parallel (up to 5)
-    const brandResults = await Promise.all(selectedBrands.map(fetchBrand));
+    // Run top 3 brands in parallel — more than 3 concurrent Shopify+web searches
+    // adds excessive load and can exhaust the outer search time budget
+    const brandResults = await Promise.all(selectedBrands.slice(0, 3).map(fetchBrand));
     for (const bp of brandResults) allProducts.push(...bp);
   }
 
