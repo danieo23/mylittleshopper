@@ -1,7 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { enrichProductsWithThumbnailAnalysis } from './analyze_product_thumbnail.js';
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const client = new Anthropic({
+  apiKey:         process.env.ANTHROPIC_API_KEY,
+  defaultHeaders: { 'anthropic-beta': 'web-search-2025-03-05' },
+});
 
 function parsePrice(raw) {
   if (typeof raw === 'number') return raw;
@@ -229,7 +232,7 @@ Return ONLY a JSON array of up to 8 products — no markdown, just the array:
       messages,
     });
   } catch (err) {
-    console.error('[brand-web-search] failed:', err.message);
+    console.error('[brand-web-search] initial call failed:', err.status ?? '', err.message);
     return [];
   }
 
@@ -281,7 +284,7 @@ Return ONLY a JSON array of up to 12 products — no markdown, no explanation, j
       messages,
     });
   } catch (err) {
-    console.error('[generic-search] failed:', err.message);
+    console.error('[generic-search] initial call failed:', err.status ?? '', err.message);
     return [];
   }
 
