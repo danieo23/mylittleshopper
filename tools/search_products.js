@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { enrichProductsWithThumbnailAnalysis } from './analyze_product_thumbnail.js';
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -83,14 +84,15 @@ function buildStyleBrief(styleDna, query, category) {
   return parts.filter(Boolean).join('\n');
 }
 
-// Stage 4: Claude selects 1-3 specific brands whose catalog best matches the style profile.
-// No web search — Claude's training knowledge of brand aesthetics is the signal here.
-async function selectBrands(styleBrief, query, category, maxPrice) {
-  const budgetNote = maxPrice ? ` Budget ceiling: $${maxPrice}.` : '';
+// Stage 4: Claude selects up to 5 specific brands whose catalog best matches the style profile,
+// ranked by aesthetic match score. No web search — Claude's training knowledge is the signal.
+async function selectBrands(styleBrief, query, category, maxPrice, excludedBrands = []) {
+  const budgetNote    = maxPrice ? ` Budget ceiling: $${maxPrice}.` : '';
+  const excludedNote  = excludedBrands.length
+    ? `\n- Do NOT suggest these brands (already used in this outfit): ${excludedBrands.join(', ')}`
+    : '';
 
-  const profBrands = styleBrief.match(/Profile-recommended brands[^\n]*:\s*([^\n]+)/)?.[1]?.split(',').map(s => s.trim()).filter(Boolean) ?? [];
-
-  const prompt = `You are a fashion brand expert with deep knowledge of brand aesthetics. Based on the user's style profile, select the 2-3 brands whose current catalog would have the highest density of matching items for this specific purchase.
+  const prompt = `You are a fashion brand expert with deep knowledge of brand aesthetics. Based on the user's style profile, select up to 5 brands whose current catalog would have the highest density of matching items for this specific purchase, ranked best-first by aesthetic match.
 
 USER STYLE PROFILE:
 ${styleBrief}
@@ -104,20 +106,24 @@ Selection rules:
 - The brand MUST actually sell this category of item
 - Prefer brands with active online stores (DTC or specialty retail — not Amazon/Walmart)
 - Most DTC fashion brands run on Shopify; note this in the "shopify" field
-- Only suggest brands that sell at the stated budget
+- Only suggest brands that sell at the stated budget${excludedNote}
 
-Return ONLY a JSON array, no markdown, no explanation:
+Return ONLY a JSON array ranked best-first, no markdown, no explanation:
 [
   {"name":"Brand Name","domain":"brandname.com","shopify":true,"reason":"one-line why this fits the profile"},
   ...
 ]`;
 
   try {
-    const response = await client.messages.create({
+    const apiCall = client.messages.create({
       model:      'claude-haiku-4-5-20251001',
-      max_tokens: 512,
+      max_tokens: 768,
       messages:   [{ role: 'user', content: prompt }],
     });
+    const response = await Promise.race([
+      apiCall,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('brand-select timeout')), 7000)),
+    ]);
     const text  = response.content[0]?.text ?? '';
     const match = text.match(/\[[\s\S]*?\]/);
     if (!match) return [];
@@ -174,6 +180,7 @@ async function fetchShopifyCatalog(domain, category, maxPrice) {
         style_category:       null,
         fit_type:             null,
         brand:                p.vendor ?? null,
+        result_source:        'shopify',
       }));
     if (!products.length) throw new Error('no matching products');
     return { col, products };
@@ -242,7 +249,7 @@ Return ONLY a JSON array of up to 8 products — no markdown, just the array:
     } catch { break; }
   }
 
-  return parseProductJson(response, brandName);
+  return parseProductJson(response, brandName, 'brand_web');
 }
 
 // Generic web search when no DNA or brand selection is available
@@ -294,10 +301,10 @@ Return ONLY a JSON array of up to 12 products — no markdown, no explanation, j
     } catch { break; }
   }
 
-  return parseProductJson(response, null);
+  return parseProductJson(response, null, 'generic_web');
 }
 
-function parseProductJson(response, defaultBrand) {
+function parseProductJson(response, defaultBrand, resultSource = 'brand_web') {
   const textBlock = response?.content?.find(b => b.type === 'text');
   if (!textBlock) return [];
   const match = textBlock.text.match(/\[[\s\S]*?\]/);
@@ -320,6 +327,7 @@ function parseProductJson(response, defaultBrand) {
         style_category:       null,
         fit_type:             null,
         brand:                p.brand ?? defaultBrand ?? p.store ?? null,
+        result_source:        resultSource,
       }));
   } catch { return []; }
 }
@@ -377,14 +385,15 @@ function filterByItemKeywords(products, query) {
  * 5. Fall back to generic web search if brand catalog is insufficient
  *
  * @param {object} params
- * @param {string}   params.query       - Style-aware search string
- * @param {string}   params.category    - tops | bottoms | shoes | outerwear | accessories | dress
- * @param {number}   params.maxPrice    - Budget ceiling
- * @param {string}   params.countryCode - Country for regional results (default 'us')
- * @param {object}   params.styleDna    - User's Style DNA for brand selection
+ * @param {string}   params.query          - Style-aware search string
+ * @param {string}   params.category       - tops | bottoms | shoes | outerwear | accessories | dress
+ * @param {number}   params.maxPrice       - Budget ceiling
+ * @param {string}   params.countryCode    - Country for regional results (default 'us')
+ * @param {object}   params.styleDna       - User's Style DNA for brand selection
+ * @param {string[]} params.excludedBrands - Brand names already used in this outfit (prevent monoculture)
  * @returns {object[]} Normalized product array
  */
-export async function searchProducts({ query, category, maxPrice, countryCode = 'us', stores = [], styleDna = null }) {
+export async function searchProducts({ query, category, maxPrice, countryCode = 'us', stores = [], styleDna = null, excludedBrands = [] }) {
   const hasDna = !!(
     styleDna?.primary_style_category ||
     styleDna?.dominant_fit           ||
@@ -397,11 +406,11 @@ export async function searchProducts({ query, category, maxPrice, countryCode = 
     // Stage 3: Build holistic style brief
     const styleBrief = buildStyleBrief(styleDna, query, category);
 
-    // Stage 4: Select 1-3 best-fit brands
-    const selectedBrands = await selectBrands(styleBrief, query, category, maxPrice);
+    // Stage 4: Select up to 5 best-fit brands, ranked by aesthetic match
+    const selectedBrands = await selectBrands(styleBrief, query, category, maxPrice, excludedBrands);
     console.log(`[brand-select] "${query}": ${selectedBrands.map(b => `${b.name} (${b.domain})`).join(', ') || 'none'}`);
 
-    // Stage 5: Fetch from both brands in parallel — Shopify first, web search fallback per brand
+    // Stage 5: For each brand in rank order — try Shopify first, web search fallback
     const fetchBrand = async (brand) => {
       if (!brand.domain) return [];
       let brandProducts = [];
@@ -417,7 +426,8 @@ export async function searchProducts({ query, category, maxPrice, countryCode = 
       return brandProducts;
     };
 
-    const brandResults = await Promise.all(selectedBrands.slice(0, 2).map(fetchBrand));
+    // Run all selected brands in parallel (up to 5)
+    const brandResults = await Promise.all(selectedBrands.map(fetchBrand));
     for (const bp of brandResults) allProducts.push(...bp);
   }
 
@@ -432,10 +442,6 @@ export async function searchProducts({ query, category, maxPrice, countryCode = 
   }
 
   // Hard-remove wrong-category items that slipped through any source.
-  // Prefer 1 correct item over 10 wrong-category ones — returning fewer
-  // triggers the agent to try again rather than showing irrelevant results.
-  // Only fall back to unfiltered if categorySafe is completely empty
-  // (items may use unusual naming that the blocklist misidentifies).
   const categorySafe = hardCategoryFilter(allProducts, category);
   const pool = categorySafe.length >= 1 ? categorySafe : allProducts;
 
@@ -448,5 +454,15 @@ export async function searchProducts({ query, category, maxPrice, countryCode = 
     return true;
   });
 
-  return unique.filter(p => p.name && p.product_url).slice(0, 15);
+  const candidates = unique.filter(p => p.name && p.product_url).slice(0, 20);
+
+  // Enrich candidates with Claude Vision thumbnail analysis (10s cap).
+  // Mutates products in place — adds real colors, fit, style_category, formality.
+  // Scored by score_product_match.js which uses these fields when present.
+  if (candidates.length > 0) {
+    const enriched = await enrichProductsWithThumbnailAnalysis(candidates, 10_000);
+    console.log(`[thumbnail] enriched ${enriched}/${candidates.length} products`);
+  }
+
+  return candidates.slice(0, 15);
 }

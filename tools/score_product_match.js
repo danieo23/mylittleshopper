@@ -1,40 +1,6 @@
-// ── Helpers: infer style attributes from product title ────────────
-// SerpAPI products have colors/fit/style = null. These extract signals
-// from the title text so scoring actually works.
+import { hexToLab, deltaE, minDeltaE } from './color_distance.js';
 
-function hexToBucket(hex) {
-  if (!hex || typeof hex !== 'string') return null;
-  const h = hex.replace('#', '').padEnd(6, '0');
-  const r = parseInt(h.slice(0,2), 16) || 0;
-  const g = parseInt(h.slice(2,4), 16) || 0;
-  const b = parseInt(h.slice(4,6), 16) || 0;
-  const brightness = (r * 299 + g * 587 + b * 114) / 1000;
-  const max = Math.max(r, g, b);
-  const sat = max === 0 ? 0 : (max - Math.min(r, g, b)) / max;
-  if (brightness < 35)                return 'black';
-  if (brightness > 220 && sat < 0.1) return 'white';
-  if (sat < 0.15) {
-    if (brightness < 80)  return 'charcoal';
-    if (brightness < 150) return 'gray';
-    return 'off-white';
-  }
-  let hue = Math.atan2(Math.sqrt(3) * (g - b), 2 * r - g - b) * (180 / Math.PI);
-  if (hue < 0) hue += 360;
-  if (sat < 0.35 && brightness > 100 && r >= g && r >= b) {
-    if (brightness > 200) return 'cream';
-    if (brightness > 160) return 'beige';
-    if (brightness > 120) return 'tan';
-    return 'camel';
-  }
-  if (hue < 20 || hue >= 345) return brightness < 100 ? 'burgundy' : 'red';
-  if (hue < 40)  return brightness < 120 ? 'rust' : 'orange';
-  if (hue < 70)  return sat < 0.4 ? 'sand' : 'yellow';
-  if (hue < 165) return sat < 0.5 ? 'olive' : 'green';
-  if (hue < 200) return 'teal';
-  if (hue < 240) return brightness < 80 ? 'navy' : brightness < 150 ? 'cobalt' : 'blue';
-  if (hue < 295) return 'purple';
-  return 'pink';
-}
+// ── Title-inference helpers (fallback when product lacks analyzed attributes) ──
 
 const COLOR_TERMS = [
   'black','white','navy','blue','red','green','gray','brown','beige','cream',
@@ -73,7 +39,41 @@ function inferStyle(name) {
   return null;
 }
 
-// Classify occasion string into season + formality signals
+// Bucket system retained as fallback for color comparison when product has no hex colors
+function hexToBucket(hex) {
+  if (!hex || typeof hex !== 'string') return null;
+  const h = hex.replace('#', '').padEnd(6, '0');
+  const r = parseInt(h.slice(0,2), 16) || 0;
+  const g = parseInt(h.slice(2,4), 16) || 0;
+  const b = parseInt(h.slice(4,6), 16) || 0;
+  const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+  const max = Math.max(r, g, b);
+  const sat = max === 0 ? 0 : (max - Math.min(r, g, b)) / max;
+  if (brightness < 35)                return 'black';
+  if (brightness > 220 && sat < 0.1) return 'white';
+  if (sat < 0.15) {
+    if (brightness < 80)  return 'charcoal';
+    if (brightness < 150) return 'gray';
+    return 'off-white';
+  }
+  let hue = Math.atan2(Math.sqrt(3) * (g - b), 2 * r - g - b) * (180 / Math.PI);
+  if (hue < 0) hue += 360;
+  if (sat < 0.35 && brightness > 100 && r >= g && r >= b) {
+    if (brightness > 200) return 'cream';
+    if (brightness > 160) return 'beige';
+    if (brightness > 120) return 'tan';
+    return 'camel';
+  }
+  if (hue < 20 || hue >= 345) return brightness < 100 ? 'burgundy' : 'red';
+  if (hue < 40)  return brightness < 120 ? 'rust' : 'orange';
+  if (hue < 70)  return sat < 0.4 ? 'sand' : 'yellow';
+  if (hue < 165) return sat < 0.5 ? 'olive' : 'green';
+  if (hue < 200) return 'teal';
+  if (hue < 240) return brightness < 80 ? 'navy' : brightness < 150 ? 'cobalt' : 'blue';
+  if (hue < 295) return 'purple';
+  return 'pink';
+}
+
 function classifyOccasion(occasion) {
   if (!occasion) return { isSummer: false, isWinter: false, isFormal: false, isAthletic: false };
   const o = occasion.toLowerCase();
@@ -85,25 +85,60 @@ function classifyOccasion(occasion) {
   };
 }
 
+// ── Feedback signal similarity ─────────────────────────────────────────────
+// Compares a product's core attributes against a recent feedback signal's stored attributes.
+// Returns true when 2+ attributes align — enough signal to apply the factor.
+function attributesOverlap(product, signalAttrs, minOverlap = 2) {
+  if (!signalAttrs || typeof signalAttrs !== 'object') return false;
+  let matches = 0;
+
+  // Fit match
+  const productFit  = product.fit_type;
+  const signalFit   = signalAttrs.fit_type;
+  if (productFit && signalFit && productFit === signalFit) matches++;
+
+  // Style category match
+  const productStyle = product.style_category;
+  const signalStyle  = signalAttrs.style_category;
+  if (productStyle && signalStyle && productStyle === signalStyle) matches++;
+
+  // Color proximity — use Delta-E when both sides have hex values
+  const productColors = product.colors ?? [];
+  const signalColors  = signalAttrs.colors ?? signalAttrs.dominant_colors ?? [];
+  if (productColors.length && signalColors.length) {
+    const close = productColors.some(pc =>
+      signalColors.some(sc => {
+        const labP = hexToLab(pc), labS = hexToLab(sc);
+        return labP && labS && deltaE(labP, labS) < 25;
+      })
+    );
+    if (close) matches++;
+  }
+
+  return matches >= minOverlap;
+}
+
 /**
  * Scores a product against a user's Style DNA.
- * Returns a score 0-100 and a breakdown of contributing factors.
- * Products scoring 60+ pass to the outfit builder.
- * Products scoring 85+ are flagged as high-confidence picks.
+ *
+ * @param {object} product         - Product object (may have analyzed attributes from analyzeProductThumbnail)
+ * @param {object} styleDna        - User's Style DNA
+ * @param {string|null} occasion   - Occasion string for seasonal/formal adjustments
+ * @param {object[]} recentSignals - Last N feedback_signals rows (optional; from getUserProfile)
+ *
+ * Returns { score: 0-100, breakdown: [], confidence: string, passes: boolean }
  */
-export function scoreProductMatch(product, styleDna, occasion = null) {
+export function scoreProductMatch(product, styleDna, occasion = null, recentSignals = []) {
   if (!styleDna) return { score: 40, breakdown: [], confidence: 'low' };
 
-  // Sparse profiles get a lower base — items must earn their score rather than
-  // coasting through on a single color match from a thin DNA.
   const isSparse = styleDna.overall_confidence_score === 'low' || styleDna.overall_confidence_score === 'medium';
   let score = isSparse ? 42 : 50;
   const breakdown = [];
 
   const {
-    primary_colors         = [],
-    secondary_colors       = [],
-    avoided_colors         = [],
+    primary_colors             = [],
+    secondary_colors           = [],
+    avoided_colors             = [],
     dominant_fit,
     primary_style_category,
     secondary_categories       = [],
@@ -117,39 +152,73 @@ export function scoreProductMatch(product, styleDna, occasion = null) {
   const productBrand    = product.brand;
   const productPrice    = product.price;
   const productCategory = product.category;
+  const dislikeCounts   = explicit_dislikes.counts ?? {};
 
-  // Use explicit attributes when set, otherwise infer from title
-  const effectiveFit   = product.fit_type     ?? inferFit(productName);
+  // Use analyzed attributes (from analyzeProductThumbnail) when available;
+  // fall back to regex inference from the product title.
+  const effectiveFit   = product.fit_type      ?? inferFit(productName);
   const effectiveStyle = product.style_category ?? inferStyle(productName);
 
-  // Colors: use explicit hex array if present, otherwise extract words from title.
-  // DNA colors are always hex → convert to buckets for apples-to-apples comparison.
-  const dnaPrimaryBuckets   = primary_colors.map(hexToBucket).filter(Boolean);
-  const dnaSecondaryBuckets = secondary_colors.map(hexToBucket).filter(Boolean);
-  const dnaAvoidedBuckets   = avoided_colors.map(hexToBucket).filter(Boolean);
+  // ── Color scoring ────────────────────────────────────────────────────────
+  // When the product has real hex colors (set by analyzeProductThumbnail),
+  // use Delta-E perceptual distance against DNA hex values.
+  // When only title color words are available, fall back to the bucket system.
 
-  const productColorBuckets = product.colors?.length
-    ? product.colors.map(hexToBucket).filter(Boolean)
-    : extractTitleColors(productName);
+  const productHexColors = (product.colors ?? []).filter(c => c?.startsWith('#'));
+  const hasRealColors    = productHexColors.length > 0;
 
-  const dislikeCounts = explicit_dislikes.counts ?? {};
+  if (hasRealColors) {
+    // Delta-E path: compare each DNA hex against product hexes
+    // Primary palette — any product color within deltaE 25 of any DNA primary color
+    const primaryMatch = primary_colors.some(dnaHex => minDeltaE(dnaHex, productHexColors) < 25);
+    // Exact match (deltaE < 5) earns the full +25; close match earns +15
+    if (primaryMatch) {
+      const exact = primary_colors.some(dnaHex => minDeltaE(dnaHex, productHexColors) < 5);
+      const delta = exact ? 25 : 15;
+      score += delta;
+      breakdown.push({ factor: exact ? 'primary color exact match (Delta-E)' : 'primary color close match (Delta-E)', delta });
+    }
 
-  // ── Color scoring ──────────────────────────────────────────────
-  const inPrimary   = productColorBuckets.some(c => dnaPrimaryBuckets.includes(c));
-  const inSecondary = productColorBuckets.some(c => dnaSecondaryBuckets.includes(c));
-  const inAvoided   = productColorBuckets.some(c => dnaAvoidedBuckets.includes(c));
+    // Secondary palette
+    const secondaryMatch = !primaryMatch && secondary_colors.some(dnaHex => minDeltaE(dnaHex, productHexColors) < 25);
+    if (secondaryMatch) {
+      score += 15; breakdown.push({ factor: 'secondary color match (Delta-E)', delta: +15 });
+    }
 
-  if (inPrimary)   { score += 25; breakdown.push({ factor: 'primary color match',   delta: +25 }); }
-  if (inSecondary) { score += 15; breakdown.push({ factor: 'secondary color match', delta: +15 }); }
-  if (inAvoided)   { score -= 40; breakdown.push({ factor: 'avoided color',          delta: -40 }); }
+    // Avoided colors — any product color close to an avoided DNA color
+    const avoidedMatch = avoided_colors.some(dnaHex => minDeltaE(dnaHex, productHexColors) < 25);
+    if (avoidedMatch) {
+      score -= 40; breakdown.push({ factor: 'avoided color (Delta-E)', delta: -40 });
+    } else {
+      // Soft penalty for a color the user disliked once
+      const onceDisliked = productHexColors.some(pc =>
+        Object.entries(dislikeCounts.colors ?? {}).some(([dnaHex, cnt]) =>
+          cnt === 1 && minDeltaE(dnaHex, [pc]) < 25
+        )
+      );
+      if (onceDisliked) { score -= 12; breakdown.push({ factor: 'color disliked once (Delta-E)', delta: -12 }); }
+    }
+  } else {
+    // Bucket fallback: title color words vs DNA hex→bucket
+    const dnaPrimaryBuckets   = primary_colors.map(hexToBucket).filter(Boolean);
+    const dnaSecondaryBuckets = secondary_colors.map(hexToBucket).filter(Boolean);
+    const dnaAvoidedBuckets   = avoided_colors.map(hexToBucket).filter(Boolean);
+    const productColorBuckets = extractTitleColors(productName);
 
-  // Gradient color penalty from dislike frequency (before the hard avoided threshold)
-  if (!inAvoided) {
-    const maxColorDislikes = Math.max(0, ...productColorBuckets.map(c => dislikeCounts.colors?.[c] ?? 0));
-    if (maxColorDislikes === 1) { score -= 12; breakdown.push({ factor: 'color disliked once',  delta: -12 }); }
+    const inPrimary   = productColorBuckets.some(c => dnaPrimaryBuckets.includes(c));
+    const inSecondary = productColorBuckets.some(c => dnaSecondaryBuckets.includes(c));
+    const inAvoided   = productColorBuckets.some(c => dnaAvoidedBuckets.includes(c));
+
+    if (inPrimary)   { score += 25; breakdown.push({ factor: 'primary color match (bucket)',   delta: +25 }); }
+    if (inSecondary) { score += 15; breakdown.push({ factor: 'secondary color match (bucket)', delta: +15 }); }
+    if (inAvoided)   { score -= 40; breakdown.push({ factor: 'avoided color (bucket)',          delta: -40 }); }
+    else {
+      const maxColorDislikes = Math.max(0, ...productColorBuckets.map(c => dislikeCounts.colors?.[c] ?? 0));
+      if (maxColorDislikes === 1) { score -= 12; breakdown.push({ factor: 'color disliked once (bucket)', delta: -12 }); }
+    }
   }
 
-  // ── Fit scoring ────────────────────────────────────────────────
+  // ── Fit scoring ──────────────────────────────────────────────────────────
   const rejectedFits = [].concat(explicit_dislikes.fits ?? []);
   if (dominant_fit && effectiveFit === dominant_fit) {
     score += 20; breakdown.push({ factor: 'fit matches preference', delta: +20 });
@@ -157,12 +226,11 @@ export function scoreProductMatch(product, styleDna, occasion = null) {
   if (effectiveFit && rejectedFits.includes(effectiveFit)) {
     score -= 35; breakdown.push({ factor: 'fit is in rejected list', delta: -35 });
   } else if (effectiveFit) {
-    // Gradient: first dislike on a fit = soft penalty before it graduates to the hard list
     const fitCount = dislikeCounts.fits?.[effectiveFit] ?? 0;
     if (fitCount === 1) { score -= 15; breakdown.push({ factor: 'fit disliked once', delta: -15 }); }
   }
 
-  // ── Style category ─────────────────────────────────────────────
+  // ── Style category ───────────────────────────────────────────────────────
   const rejectedStyles = [].concat(explicit_dislikes.styles ?? []);
   if (effectiveStyle && effectiveStyle === primary_style_category) {
     score += 20; breakdown.push({ factor: 'primary style match', delta: +20 });
@@ -176,20 +244,19 @@ export function scoreProductMatch(product, styleDna, occasion = null) {
     if (styleCount === 1) { score -= 12; breakdown.push({ factor: 'style disliked once', delta: -12 }); }
   }
 
-  // ── Brand ──────────────────────────────────────────────────────
+  // ── Brand ────────────────────────────────────────────────────────────────
   if (productBrand && brand_affinities.includes(productBrand)) {
     score += 10; breakdown.push({ factor: 'brand affinity', delta: +10 });
   }
   if (productBrand && brand_rejections.includes(productBrand)) {
     score -= 20; breakdown.push({ factor: 'brand rejection', delta: -20 });
   } else if (productBrand) {
-    // Gradient brand penalty: each dislike nudges score down before hard rejection kicks in
     const brandCount = dislikeCounts.brands?.[productBrand] ?? 0;
     if (brandCount === 1) { score -= 8;  breakdown.push({ factor: 'brand disliked once',  delta: -8  }); }
     if (brandCount === 2) { score -= 16; breakdown.push({ factor: 'brand disliked twice', delta: -16 }); }
   }
 
-  // ── Price ──────────────────────────────────────────────────────
+  // ── Price ────────────────────────────────────────────────────────────────
   const typicalSpend = per_category_price_sensitivity[productCategory];
   if (typicalSpend && productPrice) {
     if (productPrice <= typicalSpend * 1.2) {
@@ -199,21 +266,50 @@ export function scoreProductMatch(product, styleDna, occasion = null) {
     }
   }
 
-  // ── Occasion / season scoring ──────────────────────────────────
+  // ── Source quality bonus/penalty ─────────────────────────────────────────
+  if (product.result_source === 'shopify') {
+    score += 5;  breakdown.push({ factor: 'clean Shopify source', delta: +5 });
+  } else if (product.result_source === 'generic_web') {
+    score -= 5;  breakdown.push({ factor: 'generic web source', delta: -5 });
+  }
+
+  // ── Feedback signal similarity ───────────────────────────────────────────
+  // Compare this product's attributes against the user's last 50 feedback signals.
+  // 2+ attribute matches with an approval → +15; with a rejection → −30.
+  if (recentSignals.length > 0) {
+    let approvalBonus = 0, rejectionPenalty = 0;
+    for (const sig of recentSignals) {
+      const attrs = sig.item_attributes_json;
+      if (!attrs) continue;
+      if ((sig.signal_type === 'approval' || sig.signal_type === 'post_delivery_positive') &&
+          attributesOverlap(product, attrs)) {
+        approvalBonus = 15; // apply once even if multiple approvals match
+      }
+      if ((sig.signal_type === 'rejection' || sig.signal_type === 'post_delivery_negative') &&
+          attributesOverlap(product, attrs)) {
+        rejectionPenalty = -30;
+        break; // one rejection match is enough to penalize
+      }
+    }
+    if (rejectionPenalty) {
+      score += rejectionPenalty; breakdown.push({ factor: 'similar to previously rejected item', delta: rejectionPenalty });
+    } else if (approvalBonus) {
+      score += approvalBonus;    breakdown.push({ factor: 'similar to previously approved item', delta: approvalBonus });
+    }
+  }
+
+  // ── Occasion / season ────────────────────────────────────────────────────
   const { isSummer, isWinter, isFormal, isAthletic } = classifyOccasion(occasion);
   const n = productName.toLowerCase();
 
   if (isSummer) {
-    // Heavy/warm items are wrong for summer — hard penalize
     if (/hoodie|sweatshirt|puffer|parka|peacoat|overcoat|fleece|wool|flannel|sweater|knit|turtleneck|thermal|windbreaker|down jacket/.test(n)) {
       score -= 35; breakdown.push({ factor: 'heavy item for summer/warm occasion', delta: -35 });
     }
-    // Light/breathable items are ideal
     if (/linen|cotton|chambray|seersucker|gauze|short.?sleeve|shorts|sandal|lightweight|breathable|airy|linen-blend/.test(n)) {
       score += 15; breakdown.push({ factor: 'light item for summer/warm occasion', delta: +15 });
     }
   }
-
   if (isWinter) {
     if (/shorts|sandal|sleeveless|crop top|swimwear|swim|bikini/.test(n)) {
       score -= 25; breakdown.push({ factor: 'too light for winter occasion', delta: -25 });
@@ -222,13 +318,11 @@ export function scoreProductMatch(product, styleDna, occasion = null) {
       score += 10; breakdown.push({ factor: 'warm item for winter occasion', delta: +10 });
     }
   }
-
   if (isFormal) {
     if (/hoodie|sweatshirt|sneaker|flip.?flop|cargo|jogger|athletic|graphic tee/.test(n)) {
       score -= 30; breakdown.push({ factor: 'too casual for formal occasion', delta: -30 });
     }
   }
-
   if (isAthletic) {
     if (/athletic|sport|gym|workout|performance|active|training/.test(n)) {
       score += 15; breakdown.push({ factor: 'athletic item for workout occasion', delta: +15 });

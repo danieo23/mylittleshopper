@@ -109,15 +109,13 @@ export async function synthesizeStyleDna(userId) {
       .filter(Boolean)
   )].slice(0, 20);
 
-  // Aspiration gap: style categories in pure aspiration but absent from owned items
-  // (wardrobe photos + owned Pinterest boards = "what I actually wear")
-  const ownedStyles = new Set([
-    ...(wardrobe   ?? []).map(i => i.style_category),
-    ...ownedPins        .map(i => i.style_category),
-  ].filter(Boolean));
-  const aspirationStyleFreq = buildFrequencyMap(aspiration, i => i.style_category);
+  // Aspiration gap: styles the user craves but doesn't wear yet.
+  // Ratio check (aspirationFreq ≥ 3× wardrobeFreq) rather than set-difference —
+  // a single owned item of a style shouldn't suppress it from the gap list.
+  const wardrobeStyleFreq    = buildFrequencyMap([...(wardrobe ?? []), ...ownedPins], i => i.style_category, wFn);
+  const aspirationStyleFreq  = buildFrequencyMap(aspiration, i => i.style_category);
   const aspirationGap = Object.entries(aspirationStyleFreq)
-    .filter(([style]) => !ownedStyles.has(style))
+    .filter(([style, freq]) => freq >= 3 * Math.max(wardrobeStyleFreq[style] ?? 0, 1))
     .sort((a, b) => b[1] - a[1])
     .map(([style]) => style);
 

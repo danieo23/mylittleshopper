@@ -11,7 +11,7 @@ const supabase = createClient(
 );
 
 // Run a list of async tasks in parallel batches
-async function inBatches(items, fn, size = 3) {
+async function inBatches(items, fn, size = 5) {
   const results = [];
   for (let i = 0; i < items.length; i += size) {
     const batch = await Promise.allSettled(items.slice(i, i + size).map(fn));
@@ -173,12 +173,30 @@ export default async function handler(req, res) {
       if (result.error) return res.status(200).json({ success: false, ...result });
     }
 
-    const dna = await synthesizeStyleDna(userId);
+    // Mark synthesis as in-progress so the client knows it's coming
+    await supabase.from('style_dna').upsert(
+      { user_id: userId, synthesis_status: 'processing' },
+      { onConflict: 'user_id' }
+    );
+
+    // Fire synthesis after response so the client isn't blocked waiting for it.
+    // setImmediate gives the response event loop tick priority; synthesis runs
+    // in remaining Lambda lifetime (typically < 2s for a pure DB write).
+    setImmediate(async () => {
+      try {
+        await synthesizeStyleDna(userId);
+      } catch (err) {
+        console.error('[analyze] async synthesis failed:', err.message);
+        await supabase.from('style_dna')
+          .update({ synthesis_status: 'error' })
+          .eq('user_id', userId);
+      }
+    });
 
     return res.status(200).json({
       success: true,
       ...result,
-      confidence: dna?.overall_confidence_score ?? 'low',
+      synthesis_status: 'processing',
     });
   } catch (err) {
     console.error('[analyze]', err);

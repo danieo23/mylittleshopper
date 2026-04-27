@@ -309,7 +309,8 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget, refinemen
     return mapped ? [mapped] : [];
   });
 
-  const slotCache = {};
+  const slotCache  = {};
+  const usedBrands = new Set(); // tracks brands selected across slots to reduce monoculture
 
   // ── Group slots by type (same label+category = same search) ──────
   // When user asks for "2 graphic tees", we get 2 identical slots.
@@ -362,7 +363,7 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget, refinemen
         ),
         ...textQueries.map(q =>
           cap(
-            searchProducts({ query: q.trim(), category: slot.category, maxPrice: budget, countryCode: userProfile.countryCode, styleDna: dna }).catch(() => []),
+            searchProducts({ query: q.trim(), category: slot.category, maxPrice: budget, countryCode: userProfile.countryCode, styleDna: dna, excludedBrands: [...usedBrands] }).catch(() => []),
             12000,
             []
           )
@@ -377,6 +378,9 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget, refinemen
       // Tag Lens results with visual bonus; text results get no tag
       const lensProducts  = (visualResult.products ?? []).map(p => ({ ...p, _visualBonus: effectiveVisualBonus }));
       const textProducts  = textResults.flat();
+
+      // Register brands from this slot so subsequent slots can avoid monoculture
+      [...lensProducts, ...textProducts].forEach(p => { if (p.brand) usedBrands.add(p.brand); });
 
       // Merge: Lens first (preferred), then text (fills gaps)
       // Deduplicate across both streams by normalized name, then hard-filter
@@ -588,6 +592,19 @@ function hexToBucket(hex) {
   if (hue < 240) return brightness < 80 ? 'navy' : brightness < 150 ? 'cobalt' : 'blue';
   if (hue < 295) return 'purple';
   return 'pink';
+}
+
+// ── Budget parser ──────────────────────────────────────────────────
+// Extract an explicit dollar amount from the user's message.
+// Returns null when no budget is stated — callers treat null as "no ceiling."
+// Wallet balance is a payment limit, not a search budget: they are separate concepts.
+function parseBudget(text) {
+  const m = (text ?? '').match(
+    /(?:(?:under|around|about|max(?:imum)?|budget(?:\s+of)?|spend(?:ing)?|no\s+more\s+than)\s+)?\$(\d+(?:\.\d{1,2})?)|(\d+)\s*(?:dollars?|bucks?)/i
+  );
+  if (!m) return null;
+  const n = parseFloat(m[1] ?? m[2]);
+  return n >= 20 ? n : null; // ignore small numbers (sizes, counts, etc.)
 }
 
 // ── Occasion research ─────────────────────────────────────────────
@@ -1150,6 +1167,14 @@ OTHER RULES:
 - If search returns an error, tell the user exactly what failed.
 - NEVER say you are "hitting a search limit", "can't search right now", or imply a technical block unless search_products literally returned an error. You always have the ability to search. If you need more info before searching, just ask — do not invent a limit as an excuse.
 
+━━━ BUDGET RULE ━━━
+
+Wallet balance ($${wallet?.balance?.toFixed(0) ?? '0'}) is a PAYMENT LIMIT — not a search budget.
+Never use it as a price ceiling when searching. The search budget comes only from what the user explicitly states.
+  • User says "$200" or "under $200" → use that as maxPrice in search
+  • User says nothing about budget → search with no ceiling (maxPrice: null) — show what exists
+  • Order payment → only then check wallet balance to confirm they can cover it
+
 ━━━ FORMATTING — STRICT ━━━
 
 Plain text only. The UI does not render markdown.
@@ -1213,7 +1238,7 @@ async function executeTool(toolName, toolInput, userId, userProfile, excludeProd
       }
       const results = await searchProducts({ ...toolInput, query, countryCode: userProfile.countryCode, styleDna: userProfile.styleDna });
       if (!results.length) return [];
-      const scored = results.map(p => ({ ...p, ...scoreProductMatch(p, userProfile.styleDna, occasion) }));
+      const scored = results.map(p => ({ ...p, ...scoreProductMatch(p, userProfile.styleDna, occasion, userProfile.recentFeedbackSignals ?? []) }));
       // Filter out the excluded product (swap reroll) — normalize both names for fuzzy match
       const normalize = s => (s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
       const excludeKey = excludeProductName ? normalize(excludeProductName).slice(0, 40) : null;
@@ -1397,7 +1422,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
   const isWardrobeRedo = /\b(redo|revamp|refresh|overhaul|rebuild|replace|redo)\b.{0,40}\bwardrobe\b|\bwardrobe\b.{0,40}\b(redo|revamp|refresh|overhaul|rebuild)\b|\b(new|whole|full|entire|complete)\s+wardrobe\b|\bwardrobe\s+(for|this)\s+(summer|fall|winter|spring|season)\b/i.test(message);
 
   if (isWardrobeRedo) {
-    const budget    = userProfile.wallet?.balance ?? 500;
+    const budget    = parseBudget(message) ?? userProfile.wallet?.balance ?? null;
     const redoSlots = buildWardrobeRedoSlots(userProfile.styleDna, occasion);
     const slotCache = await fillSlots(redoSlots, userProfile, occasion, budget);
     const outfits   = buildShoppingBoard(redoSlots, slotCache, 10);
@@ -1447,7 +1472,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
       const priorSlots = parseRequestSlots(historicalUserText);
 
       if (priorSlots.length > 0) {
-        const budget = userProfile.wallet?.balance ?? 500;
+        const budget = parseBudget(message) ?? userProfile.wallet?.balance ?? null;
         try {
           const refinement = await handleRefinementSearch(
             message, priorSlots, userProfile, occasion, budget, conversationHistory
@@ -1526,7 +1551,8 @@ async function runAgent(message, conversationHistory, userId, recentConversation
       return { reply: clarifyText, history: messages, outfits: null, choices: clarifyChoices };
     }
 
-    const budget      = userProfile.wallet?.balance ?? 500;
+    const budget      = parseBudget(message) ?? null;
+    const outfitBudget = budget ?? userProfile.wallet?.balance ?? null;
     const slotCache   = await fillSlots(requiredSlots, userProfile, occasion, budget, null, occasionResearch);
     const filled      = requiredSlots.filter(s => (slotCache[s.id]?.length ?? 0) > 0);
     const unfilled    = requiredSlots.filter(s => !(slotCache[s.id]?.length ?? 0));
@@ -1765,7 +1791,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
           scoredProducts:     filteredCache,
           styleDna:           userProfile.styleDna,
           wardrobeItems:      userProfile.wardrobeItems,
-          budget:             userProfile.wallet?.balance ?? 500,
+          budget:             parseBudget(message) ?? userProfile.wallet?.balance ?? null,
           occasion,
           itemCounts,
           userRequest:        message,
@@ -1812,7 +1838,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
         scoredProducts:     filteredCache,
         styleDna:           userProfile.styleDna,
         wardrobeItems:      userProfile.wardrobeItems,
-        budget:             userProfile.wallet?.balance ?? 500,
+        budget:             parseBudget(message) ?? userProfile.wallet?.balance ?? null,
         occasion,
         itemCounts,
         userRequest:        message,

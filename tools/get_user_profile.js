@@ -22,6 +22,7 @@ export async function getUserProfile(userId) {
     { data: wardrobeItems },
     { data: aspirationItems },
     { data: wallet },
+    { data: recentFeedbackSignals },
   ] = await Promise.all([
     supabase.from('users').select('*').eq('id', userId).single(),
     supabase.from('style_profiles').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(1).single(),
@@ -36,6 +37,11 @@ export async function getUserProfile(userId) {
       .order('analyzed_at', { ascending: false })
       .limit(20),
     supabase.from('wallet').select('*').eq('user_id', userId).single(),
+    supabase.from('feedback_signals')
+      .select('signal_type, item_attributes_json')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(50),
   ]);
 
   // Fetch auth email separately — avoids destructuring errors if admin call fails
@@ -57,9 +63,10 @@ export async function getUserProfile(userId) {
     profile,
     styleProfile,
     styleDna,
-    wardrobeItems:      wardrobeItems  ?? [],
-    aspirationItems:    aspirationItems ?? [],
-    wallet:             wallet ?? { balance: 0 },
+    wardrobeItems:           wardrobeItems         ?? [],
+    aspirationItems:         aspirationItems        ?? [],
+    wallet:                  wallet                 ?? { balance: 0 },
+    recentFeedbackSignals:   recentFeedbackSignals  ?? [],
     // Flattened style-vault fields
     gender:              styleProfile?.gender               ?? null,
     ageRange:            styleProfile?.age_range            ?? null,

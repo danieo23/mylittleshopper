@@ -36,109 +36,33 @@ export async function updateStyleDna(userId, signalType, itemAttributes, swapTar
 
   // 3. Apply signal logic
   if (signalType === 'rejection' || signalType === 'post_delivery_negative') {
-    const dislikes = { ...(dna.explicit_dislikes ?? {}) };
-    const counts   = { ...(dislikes.counts ?? { brands: {}, colors: {}, fits: {}, styles: {} }) };
-    counts.brands  = { ...(counts.brands  ?? {}) };
-    counts.colors  = { ...(counts.colors  ?? {}) };
-    counts.fits    = { ...(counts.fits    ?? {}) };
-    counts.styles  = { ...(counts.styles  ?? {}) };
-
-    // Increment frequency count for each disliked attribute
-    if (itemAttributes.brand) {
-      counts.brands[itemAttributes.brand] = (counts.brands[itemAttributes.brand] ?? 0) + 1;
-    }
-    if (itemAttributes.fit_type) {
-      counts.fits[itemAttributes.fit_type] = (counts.fits[itemAttributes.fit_type] ?? 0) + 1;
-      // Hard-reject after 2 dislikes on the same fit
-      if (counts.fits[itemAttributes.fit_type] >= 2) {
-        dislikes.fits = [...new Set([...(dislikes.fits ?? []), itemAttributes.fit_type])];
-      }
-    }
-    if (itemAttributes.style_category) {
-      counts.styles[itemAttributes.style_category] = (counts.styles[itemAttributes.style_category] ?? 0) + 1;
-      if (counts.styles[itemAttributes.style_category] >= 2) {
-        dislikes.styles = [...new Set([...(dislikes.styles ?? []), itemAttributes.style_category])];
-      }
-    }
-    for (const color of (itemAttributes.colors ?? [])) {
-      counts.colors[color] = (counts.colors[color] ?? 0) + 1;
-      // Only move a color to avoided_colors after 2 dislikes — one blue shirt ≠ hate all blue
-      if (counts.colors[color] >= 2) {
-        const avoided = [...(dna.avoided_colors ?? [])];
-        if (!avoided.includes(color)) avoided.push(color);
-        updates.avoided_colors = [...new Set(avoided)].slice(0, 10);
-      }
-    }
-
-    // Hard brand rejection after 3 dislikes (promoted by _promoteConfirmedPreferences anyway)
-    if (itemAttributes.brand && counts.brands[itemAttributes.brand] >= 3) {
-      const rejections = dna.brand_rejections ?? [];
-      if (!rejections.includes(itemAttributes.brand)) {
-        updates.brand_rejections = [...rejections, itemAttributes.brand].slice(0, 20);
-      }
-    }
-
-    // Track rejected product names so the exact item never resurfaces
-    if (itemAttributes.name) {
-      const dislikedNames = [...(dislikes.product_names ?? []), itemAttributes.name];
-      dislikes.product_names = [...new Set(dislikedNames)].slice(0, 100);
-    }
-
-    dislikes.counts = counts;
-    updates.explicit_dislikes = dislikes;
+    const weight = signalType === 'post_delivery_negative' ? 2 : 1;
+    Object.assign(updates, _applyRejection(dna, itemAttributes, weight));
   }
 
   if (signalType === 'approval' || signalType === 'post_delivery_positive') {
     const weight = signalType === 'post_delivery_positive' ? 2 : 1;
-
-    // Reinforce brand affinities
-    if (itemAttributes.brand) {
-      const affinities = dna.brand_affinities ?? [];
-      if (!affinities.includes(itemAttributes.brand)) {
-        updates.brand_affinities = [...affinities, itemAttributes.brand].slice(0, 20);
-      }
-    }
-
-    // Reinforce per-category price sensitivity
-    if (itemAttributes.category && itemAttributes.price) {
-      const sensitivity = { ...(dna.per_category_price_sensitivity ?? {}) };
-      const existing    = sensitivity[itemAttributes.category] ?? itemAttributes.price;
-      sensitivity[itemAttributes.category] = Math.round((existing * 2 + itemAttributes.price) / 3);
-      updates.per_category_price_sensitivity = sensitivity;
-    }
-
-    // Reinforce style category — nudge toward approved aesthetic
-    if (itemAttributes.style_category) {
-      const primary    = dna.primary_style_category;
-      const secondary  = [...(dna.secondary_categories ?? [])];
-      if (itemAttributes.style_category === primary) {
-        // Already primary — no change needed, DNA synthesis will handle weight
-      } else if (!secondary.includes(itemAttributes.style_category)) {
-        // New style being approved — add to secondary (capped at 2)
-        secondary.push(itemAttributes.style_category);
-        updates.secondary_categories = secondary.slice(-2);
-      }
-    }
-
-    // Reinforce primary colors from approved item
-    if (itemAttributes.colors?.length) {
-      const primary   = [...(dna.primary_colors ?? [])];
-      const secondary = [...(dna.secondary_colors ?? [])];
-      for (const color of itemAttributes.colors) {
-        if (!primary.includes(color) && !secondary.includes(color)) {
-          // New color being approved — add to secondary palette
-          secondary.push(color);
-        }
-      }
-      updates.secondary_colors = [...new Set(secondary)].slice(0, 8);
-    }
+    Object.assign(updates, _applyApproval(dna, itemAttributes, weight));
   }
 
   if (signalType === 'swap' && swapTarget) {
-    // The delta between rejected and chosen = strong directional signal
-    if (swapTarget.fit_type && itemAttributes.fit_type && swapTarget.fit_type !== itemAttributes.fit_type) {
-      // They moved toward swapTarget.fit_type — note this preference direction
-      // Will be picked up by the next synthesize_style_dna run
+    // Apply rejection on the original item, approval (1.5×) on what they chose instead
+    Object.assign(updates, _applyRejection(dna, itemAttributes, 1));
+    Object.assign(updates, _applyApproval(dna, swapTarget, 1.5));
+
+    // Log per-attribute deltas to directional_preferences for trend analysis
+    const deltaRows = [];
+    for (const attr of ['fit_type', 'style_category', 'brand']) {
+      if (itemAttributes[attr] && swapTarget[attr] && itemAttributes[attr] !== swapTarget[attr]) {
+        deltaRows.push({ user_id: userId, attribute_name: attr, from_value: itemAttributes[attr], to_value: swapTarget[attr] });
+      }
+    }
+    // Capture dominant color delta if both items have hex colors
+    if (itemAttributes.colors?.[0] && swapTarget.colors?.[0] && itemAttributes.colors[0] !== swapTarget.colors[0]) {
+      deltaRows.push({ user_id: userId, attribute_name: 'color', from_value: itemAttributes.colors[0], to_value: swapTarget.colors[0] });
+    }
+    if (deltaRows.length > 0) {
+      await supabase.from('directional_preferences').insert(deltaRows);
     }
   }
 
@@ -152,6 +76,100 @@ export async function updateStyleDna(userId, signalType, itemAttributes, swapTar
 
   // 5. Check if any attribute has crossed the 3-signal threshold
   await _promoteConfirmedPreferences(userId, dna);
+}
+
+// Applies rejection signal to the dna snapshot, returns partial updates object.
+// weight > 1 makes counts accumulate faster (e.g. post_delivery_negative = 2).
+function _applyRejection(dna, item, weight = 1) {
+  const updates  = {};
+  const dislikes = { ...(dna.explicit_dislikes ?? {}) };
+  const counts   = {
+    brands: { ...(dislikes.counts?.brands ?? {}) },
+    colors: { ...(dislikes.counts?.colors ?? {}) },
+    fits:   { ...(dislikes.counts?.fits   ?? {}) },
+    styles: { ...(dislikes.counts?.styles ?? {}) },
+  };
+
+  if (item.brand) {
+    counts.brands[item.brand] = (counts.brands[item.brand] ?? 0) + weight;
+    if (counts.brands[item.brand] >= 3) {
+      const rejections = dna.brand_rejections ?? [];
+      if (!rejections.includes(item.brand)) {
+        updates.brand_rejections = [...rejections, item.brand].slice(0, 20);
+      }
+    }
+  }
+  if (item.fit_type) {
+    counts.fits[item.fit_type] = (counts.fits[item.fit_type] ?? 0) + weight;
+    if (counts.fits[item.fit_type] >= 2) {
+      dislikes.fits = [...new Set([...(dislikes.fits ?? []), item.fit_type])];
+    }
+  }
+  if (item.style_category) {
+    counts.styles[item.style_category] = (counts.styles[item.style_category] ?? 0) + weight;
+    if (counts.styles[item.style_category] >= 2) {
+      dislikes.styles = [...new Set([...(dislikes.styles ?? []), item.style_category])];
+    }
+  }
+  for (const color of (item.colors ?? [])) {
+    counts.colors[color] = (counts.colors[color] ?? 0) + weight;
+    if (counts.colors[color] >= 2) {
+      const avoided = [...(dna.avoided_colors ?? [])];
+      if (!avoided.includes(color)) avoided.push(color);
+      updates.avoided_colors = [...new Set(avoided)].slice(0, 10);
+    }
+  }
+  if (item.name) {
+    const dislikedNames = [...(dislikes.product_names ?? []), item.name];
+    dislikes.product_names = [...new Set(dislikedNames)].slice(0, 100);
+  }
+
+  dislikes.counts = counts;
+  updates.explicit_dislikes = dislikes;
+  return updates;
+}
+
+// Applies approval signal to the dna snapshot, returns partial updates object.
+// weight > 1 makes the signal carry more influence (e.g. post_delivery_positive = 2).
+function _applyApproval(dna, item, weight = 1) {
+  const updates = {};
+
+  if (item.brand) {
+    const affinities = dna.brand_affinities ?? [];
+    if (!affinities.includes(item.brand)) {
+      updates.brand_affinities = [...affinities, item.brand].slice(0, 20);
+    }
+  }
+
+  if (item.category && item.price) {
+    const sensitivity = { ...(dna.per_category_price_sensitivity ?? {}) };
+    const existing    = sensitivity[item.category] ?? item.price;
+    // Weighted moving average — higher weight tilts toward the new price point faster
+    sensitivity[item.category] = Math.round((existing + item.price * weight) / (1 + weight));
+    updates.per_category_price_sensitivity = sensitivity;
+  }
+
+  if (item.style_category) {
+    const primary   = dna.primary_style_category;
+    const secondary = [...(dna.secondary_categories ?? [])];
+    if (item.style_category !== primary && !secondary.includes(item.style_category)) {
+      secondary.push(item.style_category);
+      updates.secondary_categories = secondary.slice(-2);
+    }
+  }
+
+  if (item.colors?.length) {
+    const primary   = [...(dna.primary_colors   ?? [])];
+    const secondary = [...(dna.secondary_colors ?? [])];
+    for (const color of item.colors) {
+      if (!primary.includes(color) && !secondary.includes(color)) {
+        secondary.push(color);
+      }
+    }
+    updates.secondary_colors = [...new Set(secondary)].slice(0, 8);
+  }
+
+  return updates;
 }
 
 async function _promoteConfirmedPreferences(userId, dna) {

@@ -100,6 +100,53 @@ Only return the JSON array. No other text.`;
     return words.length > 0 && words.filter(w => a.includes(w)).length >= Math.min(2, words.length);
   }
 
+  // Brand monoculture guard: if one brand covers >50% of an outfit's items, ask Claude
+  // to regenerate once with a hard constraint. Log warning if still violated after regen.
+  function detectBrandDominance(outfit) {
+    const counts = {};
+    let total = 0;
+    for (const item of outfit.items ?? []) {
+      const prod  = allProducts.find(p => matchProduct(p.name, item.product_name));
+      const brand = prod?.brand ?? null;
+      if (brand) { counts[brand] = (counts[brand] ?? 0) + 1; total++; }
+    }
+    if (!total) return null;
+    const [topBrand, topCount] = Object.entries(counts).sort((a, b) => b[1] - a[1])[0] ?? [];
+    return topCount / total > 0.5 ? topBrand : null;
+  }
+
+  const violations = outfits
+    .map((o, i) => ({ idx: i, brand: detectBrandDominance(o) }))
+    .filter(x => x.brand);
+
+  if (violations.length > 0) {
+    const brandConstraints = violations
+      .map(v => `Outfit ${v.idx + 1}: max 1 item from "${v.brand}" — spread across multiple brands`)
+      .join('\n');
+    const regenPrompt = `${prompt}\n\nCRITICAL — brand diversity violations in previous response. Fix only these outfits:\n${brandConstraints}\nNo single brand may account for more than 50% of any outfit's items.`;
+    try {
+      const regenRes = await client.messages.create({
+        model:      'claude-sonnet-4-6',
+        max_tokens: 2048,
+        messages:   [{ role: 'user', content: regenPrompt }],
+      });
+      const regenText  = regenRes.content[0].text.trim();
+      const regenMatch = regenText.match(/\[[\s\S]*\]/);
+      if (regenMatch) {
+        const regenOutfits = JSON.parse(regenMatch[0]);
+        for (const { idx } of violations) {
+          if (regenOutfits[idx]) outfits[idx] = regenOutfits[idx];
+        }
+        for (const { idx } of violations) {
+          const stillBad = detectBrandDominance(outfits[idx]);
+          if (stillBad) console.warn(`[brand-mono] outfit ${idx + 1} still monoculture after regen: ${stillBad}`);
+        }
+      }
+    } catch (err) {
+      console.warn('[brand-mono] regeneration failed:', err.message);
+    }
+  }
+
   // Track which products are used across ALL outfits for strict rotation enforcement
   const usedAcrossOutfits = new Set();
 
