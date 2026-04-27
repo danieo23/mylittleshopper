@@ -207,10 +207,9 @@ Return ONLY a JSON array of up to 8 products — no markdown, just the array:
   const messages = [{ role: 'user', content: prompt }];
   let response;
   try {
-    response = await client.beta.messages.create({
+    response = await client.messages.create({
       model:      'claude-haiku-4-5-20251001',
       max_tokens: 2048,
-      betas:      ['web-search-2025-03-05'],
       tools:      [{ type: 'web_search_20250305', name: 'web_search' }],
       messages,
     });
