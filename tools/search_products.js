@@ -207,8 +207,10 @@ const capSearch = (promise) =>
 // Uses the same SHOPPING_API_KEY already wired for Google Lens visual search.
 // Returns structured product data without any LLM parsing — fast and reliable.
 // Returns null if the API key is not configured (signals caller to try Claude fallback).
+// Returns: product array on success, null if key missing, undefined if call failed (triggers Claude fallback)
 async function serpApiShoppingSearch(query, maxPrice, resultSource = 'serpapi') {
   const API_KEY = process.env.SHOPPING_API_KEY;
+  console.log(`[serpapi/${resultSource}] key=${API_KEY ? `set(${API_KEY.slice(0,4)}…)` : 'MISSING'} query="${query.slice(0, 50)}"`);
   if (!API_KEY) return null;
 
   const params = new URLSearchParams({
@@ -218,16 +220,17 @@ async function serpApiShoppingSearch(query, maxPrice, resultSource = 'serpapi') 
     hl:      'en',
     api_key: API_KEY,
   });
-  // Budget enforcement happens in scoring — don't add tbs price filter here
-  // since the format varies by region and a malformed tbs drops all results.
 
   try {
     const res = await fetch(`https://serpapi.com/search?${params}`, {
       signal: AbortSignal.timeout(10000),
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status}: ${body.slice(0, 120)}`);
+    }
     const data = await res.json();
-    if (data.error) throw new Error(data.error);
+    if (data.error) throw new Error(`SerpAPI error: ${data.error}`);
 
     const products = (data.shopping_results ?? [])
       .filter(p => p.title && p.link)
@@ -248,11 +251,11 @@ async function serpApiShoppingSearch(query, maxPrice, resultSource = 'serpapi') 
         result_source:        resultSource,
       }));
 
-    console.log(`[serpapi/${resultSource}] "${query.slice(0, 60)}": ${products.length} products`);
+    console.log(`[serpapi/${resultSource}] ${products.length} products (shopping_results: ${data.shopping_results?.length ?? 0})`);
     return products;
   } catch (err) {
     console.error(`[serpapi/${resultSource}] failed:`, err.message);
-    return []; // key exists but call failed — don't fall back to Claude
+    return undefined; // signals caller: key is set but call failed → try Claude
   }
 }
 
@@ -283,9 +286,10 @@ async function webSearchForBrand(brandName, domain, query, category, maxPrice) {
   // SerpAPI: include brand name in query for Google Shopping targeting
   const brandQuery = `${brandName} ${query}`;
   const serpResults = await serpApiShoppingSearch(brandQuery, maxPrice, 'serpapi_brand');
-  if (serpResults !== null) return serpResults;
+  // null = no key; undefined = key set but call failed; [] = success but 0 results
+  if (serpResults?.length > 0) return serpResults; // got products — done
 
-  // No SHOPPING_API_KEY — fall back to Claude web search
+  // SerpAPI unavailable or returned nothing — fall back to Claude web search
   const priceClause = maxPrice ? ` under $${maxPrice}` : '';
   const siteClause  = domain ? `site:${domain} ` : '';
   const prompt = `Find currently purchasable products from ${brandName}.
@@ -310,9 +314,11 @@ Return ONLY a JSON array of up to 8 products — no markdown, just the array:
 // Generic search — SerpAPI primary, Claude fallback.
 async function genericWebSearch(query, category, maxPrice) {
   const serpResults = await serpApiShoppingSearch(query, maxPrice, 'serpapi_generic');
-  if (serpResults !== null) return serpResults;
+  // null = no key; undefined = key set but call failed; [] = success but 0 results
+  if (serpResults?.length > 0) return serpResults; // got products — done
 
-  // No SHOPPING_API_KEY — Claude fallback
+  // SerpAPI unavailable or returned nothing → always try Claude
+  console.log('[search] SerpAPI yielded nothing — trying Claude web search');
   return claudeWebSearch(query, category, maxPrice, 'claude_generic');
 }
 
