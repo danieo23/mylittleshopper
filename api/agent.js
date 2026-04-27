@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { getUserProfile }       from '../tools/get_user_profile.js';
-import { searchProducts, hardCategoryFilter } from '../tools/search_products.js';
+import { searchProducts, hardCategoryFilter, enrichSearchResults } from '../tools/search_products.js';
 import { scoreProductMatch }    from '../tools/score_product_match.js';
 import { buildOutfits }         from '../tools/build_outfits.js';
 import { checkOutfitMultiplier } from '../tools/check_outfit_multiplier.js';
@@ -1559,6 +1559,13 @@ async function runAgent(message, conversationHistory, userId, recentConversation
 
     console.log(`[slots] filled=${filled.length}/${requiredSlots.length}` +
       (unfilled.length ? ` unfilled=[${unfilled.map(s => s.label).join(', ')}]` : ''));
+
+    // Enrich all slot products with thumbnail analysis AFTER searches complete,
+    // so it never competes with the 12s search timeout inside fillSlots.
+    const allSlotProducts = Object.values(slotCache).flat();
+    if (allSlotProducts.length > 0) {
+      await enrichSearchResults(allSlotProducts);
+    }
 
     if (filled.length > 0) {
       lastOutfits       = buildShoppingBoard(requiredSlots, slotCache);

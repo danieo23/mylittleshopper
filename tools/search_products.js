@@ -454,15 +454,20 @@ export async function searchProducts({ query, category, maxPrice, countryCode = 
     return true;
   });
 
-  const candidates = unique.filter(p => p.name && p.product_url).slice(0, 20);
+  return unique.filter(p => p.name && p.product_url).slice(0, 15);
+}
 
-  // Enrich candidates with Claude Vision thumbnail analysis (10s cap).
-  // Mutates products in place — adds real colors, fit, style_category, formality.
-  // Scored by score_product_match.js which uses these fields when present.
-  if (candidates.length > 0) {
-    const enriched = await enrichProductsWithThumbnailAnalysis(candidates, 10_000);
-    console.log(`[thumbnail] enriched ${enriched}/${candidates.length} products`);
-  }
-
-  return candidates.slice(0, 15);
+/**
+ * Enrich a product list with Claude Vision thumbnail analysis.
+ * Call this AFTER all slot searches complete — never inside a timed search call.
+ * Mutates products in place (colors, fit, style_category, formality, etc).
+ * 10-second total cap so it never stalls downstream assembly.
+ *
+ * @param {object[]} products
+ * @returns {Promise<void>}
+ */
+export async function enrichSearchResults(products) {
+  if (!products?.length) return;
+  const enriched = await enrichProductsWithThumbnailAnalysis(products, 10_000);
+  console.log(`[thumbnail] enriched ${enriched}/${products.length} products`);
 }
