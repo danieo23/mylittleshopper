@@ -406,23 +406,19 @@ export async function searchProducts({ query, category, maxPrice, countryCode = 
     return claudeKnowledgeFallback(query, category, maxPrice);
   }
 
-  // Step 2: Iterate brands sequentially; stop once we have 8+ products
-  const accumulated = [];
-  for (const brand of selectedBrands) {
-    if (!brand.is_shopify) {
-      console.log(`[search] skipping ${brand.name} (non-Shopify)`);
-      continue;
-    }
-    const products = await fetchBrandShopifyCatalog(brand, category, maxPrice);
-    const filtered  = filterByItemKeywords(products, query);
-    console.log(`[brand-catalog] ${brand.name}: ${filtered.length} products after keyword filter`);
-    accumulated.push(...filtered);
+  // Step 2: Fetch all selected brands in parallel (max 5s per brand due to slug timeouts)
+  const shopifyBrands = selectedBrands.filter(b => b.is_shopify);
+  const brandResults  = await Promise.allSettled(
+    shopifyBrands.map(brand => fetchBrandShopifyCatalog(brand, category, maxPrice))
+  );
 
-    if (accumulated.length >= 8) {
-      console.log(`[search] ${accumulated.length} products after ${brand.name} — stopping early`);
-      break;
-    }
-  }
+  const accumulated = [];
+  brandResults.forEach((r, i) => {
+    if (r.status !== 'fulfilled') return;
+    const filtered = filterByItemKeywords(r.value, query);
+    console.log(`[brand-catalog] ${shopifyBrands[i].name}: ${filtered.length} products after keyword filter`);
+    accumulated.push(...filtered);
+  });
 
   // Step 3: If catalog yielded nothing, fire Claude knowledge as last resort
   if (!accumulated.length) {
