@@ -117,24 +117,38 @@ export default async function handler(req, res) {
       return res.status(200).json({ brand: brand.name, ...result });
     }
 
-    // Bulk verify all active brands sequentially
+    // Bulk verify all active brands — 8 at a time to stay within timeout
     if (body.action === 'bulk-verify') {
       const { data: brands, error: listErr } = await supabase
         .from('curated_brands').select('*').eq('is_active', true);
       if (listErr) return res.status(500).json({ error: listErr.message });
 
-      const report = [];
-      for (const brand of brands ?? []) {
-        if (!brand.is_shopify) {
-          report.push({ name: brand.name, ok: false, note: 'non-Shopify, skipped' });
-          continue;
-        }
-        const result = await verifyShopifyEndpoint(brand);
-        await supabase.from('curated_brands').update({
-          last_verified_at: result.ok ? result.testedAt : null,
-        }).eq('id', brand.id);
-        report.push({ name: brand.name, ...result });
+      const shopify    = (brands ?? []).filter(b => b.is_shopify);
+      const nonShopify = (brands ?? []).filter(b => !b.is_shopify).map(b => ({
+        name: b.name, ok: false, note: 'non-Shopify, skipped',
+      }));
+
+      const BATCH = 8;
+      const report = [...nonShopify];
+
+      for (let i = 0; i < shopify.length; i += BATCH) {
+        const batch = shopify.slice(i, i + BATCH);
+        const results = await Promise.allSettled(batch.map(brand => verifyShopifyEndpoint(brand)));
+        await Promise.allSettled(results.map((r, idx) => {
+          const ok = r.status === 'fulfilled' && r.value.ok;
+          return supabase.from('curated_brands').update({
+            last_verified_at: ok ? r.value.testedAt : null,
+          }).eq('id', batch[idx].id);
+        }));
+        results.forEach((r, idx) => {
+          if (r.status === 'fulfilled') {
+            report.push({ name: batch[idx].name, ...r.value });
+          } else {
+            report.push({ name: batch[idx].name, ok: false, error: r.reason?.message ?? 'failed' });
+          }
+        });
       }
+
       return res.status(200).json({ report });
     }
 

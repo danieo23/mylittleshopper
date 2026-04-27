@@ -5,6 +5,7 @@
   "functions": {
     "api/agent.js":   { "maxDuration": 60 },
     "api/analyze.js": { "maxDuration": 60 },
-    "api/lens.js":    { "maxDuration": 60 }
+    "api/lens.js":         { "maxDuration": 60 },
+    "api/admin-brands.js": { "maxDuration": 60 }
   }
 }
