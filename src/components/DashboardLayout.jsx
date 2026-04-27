@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { ShoppingBag, Shirt, PackageCheck, LogOut, Menu, X, User, ChevronDown, Check } from 'lucide-react';
+import { ShoppingBag, Shirt, PackageCheck, LogOut, Menu, X, User, ChevronDown, Check, Settings } from 'lucide-react';
 import { supabase } from '@/api/client';
 
 const NAV = [
@@ -191,6 +191,24 @@ export default function DashboardLayout({ children }) {
 
         {/* User info */}
         {userId && <UserInfoPanel userId={userId} />}
+
+        {/* Admin link — only shown if token is stored */}
+        {localStorage.getItem('adminToken') && (
+          <div className="px-3 pb-1">
+            <NavLink
+              to="/admin/brands"
+              className={({ isActive }) =>
+                `flex items-center gap-3 px-3 py-2.5 text-sm transition rounded-sm ${
+                  isActive
+                    ? 'bg-primary/10 text-primary'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-secondary'
+                }`
+              }
+            >
+              <Settings className="w-4 h-4" /> Admin
+            </NavLink>
+          </div>
+        )}
 
         {/* Logout */}
         <div className="px-3 pb-6">

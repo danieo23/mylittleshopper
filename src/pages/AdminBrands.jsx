@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { CheckCircle, XCircle, RefreshCw, Plus, ToggleLeft, ToggleRight, ChevronDown, ChevronUp } from 'lucide-react';
 
-// Auth: pass ?token=YOUR_ADMIN_ACCESS_TOKEN in URL.
-// TODO: replace with proper session auth before launch.
-const ADMIN_TOKEN = new URLSearchParams(window.location.search).get('token') ?? '';
+// Auth: pass ?token=YOUR_ADMIN_ACCESS_TOKEN in URL (saved to localStorage for future visits).
+const _urlToken = new URLSearchParams(window.location.search).get('token');
+if (_urlToken) localStorage.setItem('adminToken', _urlToken);
+const ADMIN_TOKEN = _urlToken ?? localStorage.getItem('adminToken') ?? '';
 
 const API = '/api/admin-brands';
 
@@ -269,6 +270,38 @@ function BrandRow({ brand, onUpdate }) {
   );
 }
 
+// ── Admin Login ───────────────────────────────────────────────────────────
+function AdminLogin() {
+  const [token, setToken] = useState('');
+  const submit = (e) => {
+    e.preventDefault();
+    if (!token.trim()) return;
+    localStorage.setItem('adminToken', token.trim());
+    window.location.reload();
+  };
+  return (
+    <div className="min-h-screen flex items-center justify-center p-8">
+      <form onSubmit={submit} className="w-full max-w-sm space-y-4">
+        <h1 className="text-lg font-semibold">Admin Access</h1>
+        <input
+          type="password"
+          autoFocus
+          placeholder="Enter admin token"
+          value={token}
+          onChange={e => setToken(e.target.value)}
+          className="w-full border border-border rounded px-3 py-2 text-sm bg-background focus:outline-none focus:border-primary"
+        />
+        <button
+          type="submit"
+          className="w-full bg-primary text-primary-foreground rounded px-4 py-2 text-sm hover:opacity-90"
+        >
+          Sign in
+        </button>
+      </form>
+    </div>
+  );
+}
+
 // ── Main Admin Page ───────────────────────────────────────────────────────
 export default function AdminBrands() {
   const [brands,       setBrands]       = useState([]);
@@ -326,14 +359,7 @@ export default function AdminBrands() {
   }, {});
 
   if (!ADMIN_TOKEN) {
-    return (
-      <div className="min-h-screen flex items-center justify-center p-8 text-center">
-        <div>
-          <h1 className="text-lg font-semibold mb-2">Admin Access Required</h1>
-          <p className="text-sm text-muted-foreground">Pass <code>?token=YOUR_ADMIN_ACCESS_TOKEN</code> in the URL.</p>
-        </div>
-      </div>
-    );
+    return <AdminLogin />;
   }
 
   return (
