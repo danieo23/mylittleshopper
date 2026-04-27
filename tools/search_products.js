@@ -198,114 +198,121 @@ async function fetchShopifyCatalog(domain, category, maxPrice) {
   return products;
 }
 
-// Hard cap on any single web search call — prevents 60s Anthropic client
-// timeouts from stalling the pipeline. Resolves to [] on timeout.
-const WEB_SEARCH_TIMEOUT_MS = 9000;
-const capWebSearch = (promise) =>
+// Hard cap on any single external search call. Resolves to [] on timeout.
+const WEB_SEARCH_TIMEOUT_MS = 12000;
+const capSearch = (promise) =>
   Promise.race([promise, new Promise(resolve => setTimeout(() => resolve([]), WEB_SEARCH_TIMEOUT_MS))]);
 
-// Stage 5b: Brand-targeted web search fallback for non-Shopify brands.
-async function webSearchForBrand(brandName, domain, query, category, maxPrice) {
-  const priceClause = maxPrice ? ` under $${maxPrice}` : '';
-  const siteClause  = domain ? `site:${domain} ` : '';
+// ── SerpAPI Google Shopping (primary text search) ────────────────────────────
+// Uses the same SHOPPING_API_KEY already wired for Google Lens visual search.
+// Returns structured product data without any LLM parsing — fast and reliable.
+// Returns null if the API key is not configured (signals caller to try Claude fallback).
+async function serpApiShoppingSearch(query, maxPrice, resultSource = 'serpapi') {
+  const API_KEY = process.env.SHOPPING_API_KEY;
+  if (!API_KEY) return null;
 
-  const prompt = `You are a fashion product search specialist. Find currently purchasable products from ${brandName}.
+  const params = new URLSearchParams({
+    engine:  'google_shopping',
+    q:       query,
+    gl:      'us',
+    hl:      'en',
+    api_key: API_KEY,
+  });
+  if (maxPrice) params.set('tbs', `mr:1,price:1,ppr_max:${Math.round(maxPrice)}`);
 
-Search for: ${siteClause}${query} ${category}${priceClause}
-
-For each product found:
-- Copy the exact product name as it appears on the store
-- Extract the exact numeric price in USD
-- Get the direct product page URL
-- Get the product image URL
-
-Return ONLY a JSON array of up to 8 products — no markdown, just the array:
-[{"name":"...","price":49.99,"store":"${brandName}","product_url":"https://...","image_url":"https://...","brand":"${brandName}"},...]`;
-
-  const messages = [{ role: 'user', content: prompt }];
-  let response;
   try {
-    response = await client.messages.create({
-      model:      'claude-haiku-4-5-20251001',
-      max_tokens: 2048,
-      tools:      [{ type: 'web_search_20250305', name: 'web_search' }],
-      messages,
+    const res = await fetch(`https://serpapi.com/search?${params}`, {
+      signal: AbortSignal.timeout(10000),
     });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    const products = (data.shopping_results ?? [])
+      .filter(p => p.title && p.link)
+      .slice(0, 12)
+      .map(p => ({
+        id:                   `sp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        name:                 p.title,
+        price:                typeof p.extracted_price === 'number' ? p.extracted_price : parsePrice(p.price),
+        store:                p.source ?? null,
+        image_url:            p.thumbnail ?? null,
+        all_images:           p.thumbnail ? [p.thumbnail] : [],
+        product_url:          p.link,
+        serpapi_product_link: p.product_link ?? null,
+        colors:               null,
+        style_category:       null,
+        fit_type:             null,
+        brand:                p.brand ?? null,
+        result_source:        resultSource,
+      }));
+
+    console.log(`[serpapi/${resultSource}] "${query.slice(0, 60)}": ${products.length} products`);
+    return products;
   } catch (err) {
-    console.error('[brand-web-search] initial call failed:', err.status ?? '', err.message);
-    return [];
+    console.error(`[serpapi/${resultSource}] failed:`, err.message);
+    return []; // key exists but call failed — don't fall back to Claude
   }
-
-  let turns = 0;
-  while (response.stop_reason === 'tool_use' && turns++ < 2) {
-    const toolUses = response.content.filter(b => b.type === 'tool_use');
-    messages.push({ role: 'assistant', content: response.content });
-    messages.push({ role: 'user', content: toolUses.map(b => ({
-      type: 'tool_result', tool_use_id: b.id, content: b.output ?? '',
-    })) });
-    try {
-      response = await client.messages.create({
-        model:      'claude-haiku-4-5-20251001',
-        max_tokens: 2048,
-        tools:      [{ type: 'web_search_20250305', name: 'web_search' }],
-        messages,
-      });
-    } catch { break; }
-  }
-
-  return parseProductJson(response, brandName, 'brand_web');
 }
 
-// Generic web search when no DNA or brand selection is available
-async function genericWebSearch(query, category, maxPrice) {
+// ── Claude web search (fallback when SHOPPING_API_KEY is not set) ────────────
+async function claudeWebSearch(query, category, maxPrice, resultSource = 'claude_web') {
   const priceClause = maxPrice ? ` priced under $${maxPrice}` : '';
+  const prompt = `Find real, currently purchasable ${category} products matching: "${query}"${priceClause}
 
-  const prompt = `You are a fashion product search specialist. Find real, currently purchasable ${category} products matching this style brief:
-
-"${query}"${priceClause}
-
-Search the web for actual products from real retailers. For each product found:
-- Copy the exact product name as it appears on the page
-- Extract the exact numeric price in USD
-- Note the store/retailer name
-- Get the direct product page URL (the specific product, not a category)
-- Get the product image URL (the main product photo)
-
-Return ONLY a JSON array of up to 12 products — no markdown, no explanation, just the array:
+Return ONLY a JSON array of up to 12 products — no markdown, just the array:
 [{"name":"...","price":49.99,"store":"...","product_url":"https://...","image_url":"https://...","brand":"..."},...]`;
 
-  const messages = [{ role: 'user', content: prompt }];
-  let response;
   try {
-    response = await client.messages.create({
+    const response = await client.messages.create({
       model:      'claude-haiku-4-5-20251001',
       max_tokens: 4096,
       tools:      [{ type: 'web_search_20250305', name: 'web_search' }],
-      messages,
+      messages:   [{ role: 'user', content: prompt }],
     });
+    return parseProductJson(response, null, resultSource);
   } catch (err) {
-    console.error('[generic-search] initial call failed:', err.status ?? '', err.message);
+    console.error(`[claude-web/${resultSource}] failed:`, err.status ?? '', err.message);
     return [];
   }
+}
 
-  let turns = 0;
-  while (response.stop_reason === 'tool_use' && turns++ < 3) {
-    const toolUses = response.content.filter(b => b.type === 'tool_use');
-    messages.push({ role: 'assistant', content: response.content });
-    messages.push({ role: 'user', content: toolUses.map(b => ({
-      type: 'tool_result', tool_use_id: b.id, content: b.output ?? '',
-    })) });
-    try {
-      response = await client.messages.create({
-        model:      'claude-haiku-4-5-20251001',
-        max_tokens: 4096,
-        tools:      [{ type: 'web_search_20250305', name: 'web_search' }],
-        messages,
-      });
-    } catch { break; }
+// Stage 5b: Brand-targeted product search — SerpAPI primary, Claude fallback.
+async function webSearchForBrand(brandName, domain, query, category, maxPrice) {
+  // SerpAPI: include brand name in query for Google Shopping targeting
+  const brandQuery = `${brandName} ${query}`;
+  const serpResults = await serpApiShoppingSearch(brandQuery, maxPrice, 'serpapi_brand');
+  if (serpResults !== null) return serpResults;
+
+  // No SHOPPING_API_KEY — fall back to Claude web search
+  const priceClause = maxPrice ? ` under $${maxPrice}` : '';
+  const siteClause  = domain ? `site:${domain} ` : '';
+  const prompt = `Find currently purchasable products from ${brandName}.
+Search for: ${siteClause}${query} ${category}${priceClause}
+Return ONLY a JSON array of up to 8 products — no markdown, just the array:
+[{"name":"...","price":49.99,"store":"${brandName}","product_url":"https://...","image_url":"https://...","brand":"${brandName}"},...]`;
+
+  try {
+    const response = await client.messages.create({
+      model:      'claude-haiku-4-5-20251001',
+      max_tokens: 2048,
+      tools:      [{ type: 'web_search_20250305', name: 'web_search' }],
+      messages:   [{ role: 'user', content: prompt }],
+    });
+    return parseProductJson(response, brandName, 'claude_brand');
+  } catch (err) {
+    console.error('[brand-web-search] claude failed:', err.status ?? '', err.message);
+    return [];
   }
+}
 
-  return parseProductJson(response, null, 'generic_web');
+// Generic search — SerpAPI primary, Claude fallback.
+async function genericWebSearch(query, category, maxPrice) {
+  const serpResults = await serpApiShoppingSearch(query, maxPrice, 'serpapi_generic');
+  if (serpResults !== null) return serpResults;
+
+  // No SHOPPING_API_KEY — Claude fallback
+  return claudeWebSearch(query, category, maxPrice, 'claude_generic');
 }
 
 function parseProductJson(response, defaultBrand, resultSource = 'brand_web') {
@@ -405,47 +412,46 @@ export async function searchProducts({ query, category, maxPrice, countryCode = 
     styleDna?.brand_affinities?.length
   );
 
-  let allProducts = [];
+  const enrichedQuery = hasDna
+    ? `${query} ${styleDna.primary_style_category ?? ''} ${styleDna.dominant_fit ?? ''}`.trim().replace(/\s+/g, ' ')
+    : query;
 
-  if (hasDna) {
-    // Stage 3: Build holistic style brief
-    const styleBrief = buildStyleBrief(styleDna, query, category);
+  // Brand pipeline and generic search run IN PARALLEL.
+  // Generic search (SerpAPI) completes in 1-3s and guarantees results even if
+  // the brand pipeline times out. Brand results are preferred (more targeted);
+  // generic fills any gaps after deduplication.
+  const fetchBrand = async (brand) => {
+    if (!brand.domain) return [];
+    let bp = [];
+    if (brand.shopify !== false) {
+      bp = await fetchShopifyCatalog(brand.domain, category, maxPrice);
+    }
+    if (bp.length < 3) {
+      const fallback = await capSearch(webSearchForBrand(brand.name, brand.domain, query, category, maxPrice));
+      bp = bp.length >= fallback.length ? bp : fallback;
+    }
+    bp = filterByItemKeywords(bp, query);
+    console.log(`[brand-catalog] ${brand.name}: ${bp.length} matching products`);
+    return bp;
+  };
 
-    // Stage 4: Select up to 5 best-fit brands, ranked by aesthetic match
-    const selectedBrands = await selectBrands(styleBrief, query, category, maxPrice, excludedBrands);
-    console.log(`[brand-select] "${query}": ${selectedBrands.map(b => `${b.name} (${b.domain})`).join(', ') || 'none'}`);
+  const brandPipelinePromise = hasDna
+    ? (async () => {
+        const styleBrief     = buildStyleBrief(styleDna, query, category);
+        const selectedBrands = await selectBrands(styleBrief, query, category, maxPrice, excludedBrands);
+        console.log(`[brand-select] "${query}": ${selectedBrands.map(b => `${b.name} (${b.domain})`).join(', ') || 'none'}`);
+        const results = await Promise.all(selectedBrands.slice(0, 3).map(fetchBrand));
+        return results.flat();
+      })().catch(err => { console.error('[brand-pipeline]', err.message); return []; })
+    : Promise.resolve([]);
 
-    // Stage 5: For each brand in rank order — try Shopify first, web search fallback
-    const fetchBrand = async (brand) => {
-      if (!brand.domain) return [];
-      let brandProducts = [];
-      if (brand.shopify !== false) {
-        brandProducts = await fetchShopifyCatalog(brand.domain, category, maxPrice);
-      }
-      if (brandProducts.length < 3) {
-        const fallback = await capWebSearch(webSearchForBrand(brand.name, brand.domain, query, category, maxPrice));
-        brandProducts = brandProducts.length >= fallback.length ? brandProducts : fallback;
-      }
-      brandProducts = filterByItemKeywords(brandProducts, query);
-      console.log(`[brand-catalog] ${brand.name}: ${brandProducts.length} matching products`);
-      return brandProducts;
-    };
+  const genericPromise = capSearch(genericWebSearch(enrichedQuery, category, maxPrice));
 
-    // Run top 3 brands in parallel — more than 3 concurrent Shopify+web searches
-    // adds excessive load and can exhaust the outer search time budget
-    const brandResults = await Promise.all(selectedBrands.slice(0, 3).map(fetchBrand));
-    for (const bp of brandResults) allProducts.push(...bp);
-  }
+  const [brandProducts, genericProducts] = await Promise.all([brandPipelinePromise, genericPromise]);
+  console.log(`[search] brand=${brandProducts.length} generic=${genericProducts.length} query="${query.slice(0, 60)}"`);
 
-  // Supplement with generic web search if brand catalog was insufficient
-  if (allProducts.length < 5) {
-    console.log(`[search] brand pipeline yielded ${allProducts.length}, running generic web search`);
-    const enrichedQuery = hasDna
-      ? `${query} ${styleDna.primary_style_category ?? ''} ${styleDna.dominant_fit ?? ''}`.trim().replace(/\s+/g, ' ')
-      : query;
-    const fallback = await capWebSearch(genericWebSearch(enrichedQuery, category, maxPrice));
-    allProducts.push(...fallback);
-  }
+  // Brand products first (more persona-targeted), generic fills remaining slots
+  let allProducts = [...brandProducts, ...genericProducts];
 
   // Hard-remove wrong-category items that slipped through any source.
   const categorySafe = hardCategoryFilter(allProducts, category);
