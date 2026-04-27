@@ -19,7 +19,7 @@ function checkAuth(req) {
 
 // Verify a single brand's Shopify catalog endpoint.
 // Returns { ok, productCount, testedAt } — used by both single and bulk verify.
-async function verifyShopifyEndpoint(brand) {
+async function verifyShopifyEndpoint(brand, { timeoutMs = 6000 } = {}) {
   const base = (brand.shopify_base_url ?? `https://${brand.domain}`).replace(/\/$/, '');
   const slugsToTry = [
     ...(brand.shopify_collection_slugs ?? []),
@@ -41,7 +41,7 @@ async function verifyShopifyEndpoint(brand) {
       const url  = `${base}/collections/${slug}/products.json?limit=10`;
       const res  = await fetch(url, {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
-        signal:  AbortSignal.timeout(6000),
+        signal:  AbortSignal.timeout(timeoutMs),
       });
       if (!res.ok) continue;
       const data  = await res.json();
@@ -59,7 +59,7 @@ async function verifyShopifyEndpoint(brand) {
     try {
       const res = await fetch(`${base}/products.json?limit=10`, {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
-        signal:  AbortSignal.timeout(6000),
+        signal:  AbortSignal.timeout(timeoutMs),
       });
       if (res.ok) {
         const data  = await res.json();
@@ -133,7 +133,7 @@ export default async function handler(req, res) {
 
       for (let i = 0; i < shopify.length; i += BATCH) {
         const batch = shopify.slice(i, i + BATCH);
-        const results = await Promise.allSettled(batch.map(brand => verifyShopifyEndpoint(brand)));
+        const results = await Promise.allSettled(batch.map(brand => verifyShopifyEndpoint(brand, { timeoutMs: 2500 })));
         await Promise.allSettled(results.map((r, idx) => {
           const ok = r.status === 'fulfilled' && r.value.ok;
           return supabase.from('curated_brands').update({
