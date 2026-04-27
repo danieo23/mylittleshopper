@@ -218,7 +218,8 @@ async function serpApiShoppingSearch(query, maxPrice, resultSource = 'serpapi') 
     hl:      'en',
     api_key: API_KEY,
   });
-  if (maxPrice) params.set('tbs', `mr:1,price:1,ppr_max:${Math.round(maxPrice)}`);
+  // Budget enforcement happens in scoring — don't add tbs price filter here
+  // since the format varies by region and a malformed tbs drops all results.
 
   try {
     const res = await fetch(`https://serpapi.com/search?${params}`, {
