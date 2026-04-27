@@ -100,6 +100,7 @@ TASK: Find "${query}" in the "${category}" category.${budgetNote}
 Selection rules:
 - The "Profile-recommended brands" line lists brands already identified as the best aesthetic match for this wardrobe — prefer these first if they sell the requested category
 - "Text found on owned garments" tells you their aesthetic identity — if you see music artist names (Radiohead, The Cure, etc.) the person buys from labels like Needles, Human Made, Stüssy, CPFM. If you see pop culture / superhero / character graphics, they lean vintage-inspired streetwear labels. CRITICAL: do NOT use these as literal search terms — they represent what the user ALREADY OWNS. Never pick a brand because it sells the same graphic they already have.
+- FORMALITY MATCH IS MANDATORY: Read the search query for occasion cues (dinner, party, date, office, wedding, rooftop, event, smart casual, formal, etc.). If the occasion is elevated (formality ≥ 6/10), do NOT select streetwear or skate brands (Stüssy, Supreme, Palace, BAPE, Carhartt WIP, etc.) even if they appear in wardrobe signals — those brands do not produce appropriate items for formal occasions. Instead pick brands that actually carry elevated smart casual or formal pieces (COS, ASOS, Reiss, Club Monaco, J.Crew, Ted Baker, Todd Snyder, AllSaints, Buck Mason, Everlane, etc.).
 - The brand MUST actually sell this category of item
 - Prefer brands with active online stores (DTC or specialty retail — not Amazon/Walmart)
 - Most DTC fashion brands run on Shopify; note this in the "shopify" field
@@ -226,10 +227,9 @@ Return ONLY a JSON array of up to 8 products — no markdown, just the array:
       type: 'tool_result', tool_use_id: b.id, content: b.output ?? '',
     })) });
     try {
-      response = await client.beta.messages.create({
+      response = await client.messages.create({
         model:      'claude-haiku-4-5-20251001',
         max_tokens: 2048,
-        betas:      ['web-search-2025-03-05'],
         tools:      [{ type: 'web_search_20250305', name: 'web_search' }],
         messages,
       });
@@ -260,10 +260,9 @@ Return ONLY a JSON array of up to 12 products — no markdown, no explanation, j
   const messages = [{ role: 'user', content: prompt }];
   let response;
   try {
-    response = await client.beta.messages.create({
+    response = await client.messages.create({
       model:      'claude-haiku-4-5-20251001',
       max_tokens: 4096,
-      betas:      ['web-search-2025-03-05'],
       tools:      [{ type: 'web_search_20250305', name: 'web_search' }],
       messages,
     });
@@ -280,10 +279,9 @@ Return ONLY a JSON array of up to 12 products — no markdown, no explanation, j
       type: 'tool_result', tool_use_id: b.id, content: b.output ?? '',
     })) });
     try {
-      response = await client.beta.messages.create({
+      response = await client.messages.create({
         model:      'claude-haiku-4-5-20251001',
         max_tokens: 4096,
-        betas:      ['web-search-2025-03-05'],
         tools:      [{ type: 'web_search_20250305', name: 'web_search' }],
         messages,
       });
