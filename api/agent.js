@@ -268,6 +268,47 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget, refinemen
   const dislikedNames = new Set(
     (dna?.explicit_dislikes?.product_names ?? []).map(n => nameKey(n))
   );
+
+  // ── Wardrobe OCR blocklist ─────────────────────────────────────────
+  // Extract proper nouns from wardrobe OCR text (character names, brand logos,
+  // slogans on garments). Products whose names contain these terms are filtered
+  // out — the user already owns them, we should not recommend them again.
+  const GENERIC_OCR_WORDS = new Set([
+    'this','that','with','from','have','will','your','they','been','were','would',
+    'could','should','their','there','about','after','before','black','white','blue',
+    'gray','grey','size','large','small','medium','brand','style','mens','womens',
+    'shirt','tshirt','pants','shoes','jeans','denim','color','print','logo','wear',
+  ]);
+  const wardrobeOcrBlocklist = new Set();
+  (userProfile.wardrobeItems ?? []).forEach(item => {
+    const ocr      = item.ocr_text ?? '';
+    const cultural = (item.cultural_signals ?? []).join(' ');
+    // Only extract words ≥5 chars that look like proper nouns (specific enough to block)
+    `${ocr} ${cultural}`.toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length >= 5 && !GENERIC_OCR_WORDS.has(w))
+      .forEach(w => wardrobeOcrBlocklist.add(w));
+  });
+
+  // ── Occasion avoidItems patterns ───────────────────────────────────
+  // Map common avoidItems phrases to regexes that catch actual product names.
+  // "graphic tees" must catch "Superman T-Shirt", "DC Comics Tee", etc.
+  const AVOID_PATTERN_MAP = {
+    'graphic tees':     /graphic\s+t(?:ee|[-\s]shirt)|\b(?:superman|batman|spider[\s-]?man|iron\s*man|marvel|dc\s+comics|anime|character|scorpion|dragonball|pokemon|vintage\s+graphic)\b/i,
+    'cargo pants':      /\bcargo\b/i,
+    'athletic sneakers':/athletic\s+shoe|running\s+shoe|training\s+shoe/i,
+    'hoodies':          /\bhoodie\b/i,
+    'flip-flops':       /flip[\s-]?flop/i,
+    'distressed jeans': /\bdistressed|ripped\s+jean|torn\s+jean/i,
+    'sneakers':         /\bsneaker|\btrainer\b/i,
+    'jeans':            /\bjeans?\b/i,
+  };
+  const occasionAvoidRegexes = (occasionResearch?.avoidItems ?? []).flatMap(item => {
+    const mapped = AVOID_PATTERN_MAP[item.toLowerCase()];
+    return mapped ? [mapped] : [];
+  });
+
   const slotCache = {};
 
   // ── Group slots by type (same label+category = same search) ──────
@@ -315,8 +356,13 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget, refinemen
         ),
       ]);
 
+      // When occasion research is active, Lens results are counterproductive —
+      // visual search finds "more of what you own" which is wrong for formal events.
+      // Zero the visual bonus so text search results (occasion-appropriate items) win.
+      const effectiveVisualBonus = occasionResearch ? 0 : VISUAL_BONUS;
+
       // Tag Lens results with visual bonus; text results get no tag
-      const lensProducts  = (visualResult.products ?? []).map(p => ({ ...p, _visualBonus: VISUAL_BONUS }));
+      const lensProducts  = (visualResult.products ?? []).map(p => ({ ...p, _visualBonus: effectiveVisualBonus }));
       const textProducts  = textResults.flat();
 
       // Merge: Lens first (preferred), then text (fills gaps)
@@ -332,8 +378,30 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget, refinemen
       const categoryFiltered = hardCategoryFilter(merged, slot.category);
       const unique = categoryFiltered.length >= 1 ? categoryFiltered : merged;
 
+      // ── Occasion + wardrobe filters (applied before scoring) ─────────
+      // 1. Occasion avoidItems: hard-remove products matching the dress code's
+      //    explicit exclusions (e.g. "graphic tees" at a rooftop dinner removes
+      //    Superman shirts, DC Comics tees, etc.)
+      // 2. Wardrobe OCR blocklist: remove products whose names contain proper
+      //    nouns extracted from the user's wardrobe (so "Superman" in wardrobe
+      //    → block "Superman T-Shirt" in results)
+      // Only apply if the filtered pool would leave ≥2 items (preserve recall).
+      let occasionFiltered = unique;
+      if (occasionAvoidRegexes.length > 0 || wardrobeOcrBlocklist.size > 0) {
+        const filtered = unique.filter(p => {
+          const name = (p.name ?? '').toLowerCase();
+          if (occasionAvoidRegexes.some(re => re.test(name))) return false;
+          if (wardrobeOcrBlocklist.size > 0 &&
+              [...wardrobeOcrBlocklist].some(term => name.includes(term))) return false;
+          return true;
+        });
+        if (filtered.length >= 2) occasionFiltered = filtered;
+        else if (filtered.length === 1) occasionFiltered = filtered; // 1 is fine
+        // If filter wipes everything, fall back to unfiltered (rare edge case)
+      }
+
       // Score all products; Lens results receive the visual bonus on top
-      const scored = unique.map(p => ({
+      const scored = occasionFiltered.map(p => ({
         ...p,
         _score:   scoreProductMatch(p, dna, occasion).score + (p._visualBonus ?? 0),
         _slot_id: slot.id,
