@@ -125,8 +125,9 @@ Return ONLY a JSON array ranked best-first, no markdown, no explanation:
       new Promise((_, reject) => setTimeout(() => reject(new Error('brand-select timeout')), 7000)),
     ]);
     const text  = response.content[0]?.text ?? '';
-    const match = text.match(/\[[\s\S]*?\]/);
-    if (!match) return [];
+    console.log('[brand-select] raw response (first 200):', text.slice(0, 200));
+    const match = text.match(/\[\s*\{[\s\S]*\}\s*\]/);
+    if (!match) { console.warn('[brand-select] no JSON array found in response'); return []; }
     return JSON.parse(match[0]);
   } catch (err) {
     console.error('[brand-select] failed:', err.message);
@@ -306,9 +307,10 @@ Return ONLY a JSON array of up to 12 products — no markdown, no explanation, j
 
 function parseProductJson(response, defaultBrand, resultSource = 'brand_web') {
   const textBlock = response?.content?.find(b => b.type === 'text');
-  if (!textBlock) return [];
-  const match = textBlock.text.match(/\[[\s\S]*?\]/);
-  if (!match) return [];
+  if (!textBlock) { console.warn(`[parse-product/${resultSource}] no text block in response`); return []; }
+  console.log(`[parse-product/${resultSource}] raw (first 200):`, textBlock.text.slice(0, 200));
+  const match = textBlock.text.match(/\[\s*\{[\s\S]*\}\s*\]/);
+  if (!match) { console.warn(`[parse-product/${resultSource}] no JSON array found`); return []; }
   try {
     const raw = JSON.parse(match[0]);
     if (!Array.isArray(raw)) return [];
