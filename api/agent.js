@@ -510,51 +510,170 @@ function hexToBucket(hex) {
 }
 
 // ── Occasion research ─────────────────────────────────────────────
-// When the user mentions a specific event, venue, or activity,
-// this generates a styled dress code brief using Claude's training knowledge.
-// Returns null for generic/vague occasions so no extra latency is added.
-async function researchOccasion(userMessage) {
-  const prompt = `You are an expert fashion stylist with encyclopedic knowledge of dress codes, events, venues, and occasion attire.
+// Static dress-code lookup — zero latency, no API call.
+// Returns a brief for recognised named events, null otherwise.
+const OCCASION_BRIEFS = [
+  {
+    patterns: [/rooftop\s+dinner|dinner\s+party|dinner\s+date|nice\s+dinner|fancy\s+dinner/i],
+    brief: {
+      event: 'rooftop dinner / dinner party', formality: 7,
+      dresscode: 'smart casual — polished and intentional without being stiff; elevated basics, clean lines',
+      typicalItems: ['blazer or sport coat', 'chino trousers or slim dress pants', 'button-down or clean crew-neck', 'leather loafers or clean Chelsea boots'],
+      avoidItems: ['cargo pants', 'graphic tees', 'athletic sneakers', 'hoodies', 'flip-flops', 'distressed jeans'],
+      searchTerms: ['smart casual', 'tailored chino', 'oxford button-down', 'leather loafer', 'slim blazer'],
+      context: 'The rooftop setting calls for elevated smart casual — clean sneakers are borderline; beaten-up ones are not.',
+    },
+  },
+  {
+    patterns: [/date\s+night|romantic\s+dinner|anniversary\s+dinner/i],
+    brief: {
+      event: 'date night', formality: 6,
+      dresscode: 'smart casual with a confident edge — put-together but relaxed enough to feel like yourself',
+      typicalItems: ['well-fitted dark jeans or chinos', 'clean button-down or smart knit', 'loafers or clean white sneakers', 'optional blazer'],
+      avoidItems: ['gym wear', 'oversized graphic tees', 'athletic sneakers', 'cargo shorts'],
+      searchTerms: ['smart casual', 'slim dark jeans', 'polo', 'chino', 'clean sneaker'],
+      context: 'Aim for the version of yourself you\'d be proud of — sharp but not trying too hard.',
+    },
+  },
+  {
+    patterns: [/black\s+tie|white\s+tie|gala\b|formal\s+ball|charity\s+ball/i],
+    brief: {
+      event: 'black tie / gala', formality: 10,
+      dresscode: 'black tie — tuxedo, dress shirt, bow tie, dress shoes',
+      typicalItems: ['tuxedo jacket', 'tuxedo trousers', 'dress shirt', 'bow tie', 'patent leather shoes'],
+      avoidItems: ['jeans', 'sneakers', 'casual shirts', 'dark suit instead of tuxedo'],
+      searchTerms: ['tuxedo', 'formal dress shirt', 'bow tie', 'patent leather oxford', 'evening wear'],
+      context: 'Black tie means a tuxedo — not a dark suit. White shirt, black bow tie, patent shoes.',
+    },
+  },
+  {
+    patterns: [/cocktail\s+party|cocktail\s+attire|semi.?formal/i],
+    brief: {
+      event: 'cocktail party / semi-formal', formality: 8,
+      dresscode: 'cocktail attire — dark suit or blazer with trousers, dress shoes',
+      typicalItems: ['dark suit or blazer', 'dress trousers', 'dress shirt', 'tie optional', 'Oxford or Derby shoes'],
+      avoidItems: ['jeans', 'sneakers', 'graphic tees', 'cargo pants'],
+      searchTerms: ['dark suit', 'blazer dress trousers', 'dress shirt', 'Oxford shoes', 'slim fit'],
+      context: 'A dark well-fitted suit is always the safe call. A sharp blazer with coordinated trousers also reads correctly.',
+    },
+  },
+  {
+    patterns: [/\bwedding\b(?!\s+party)|\bwedding\s+guest\b/i],
+    brief: {
+      event: 'wedding guest', formality: 8,
+      dresscode: 'cocktail attire — suit or blazer with trousers; avoid white entirely',
+      typicalItems: ['suit or blazer', 'dress trousers', 'dress shirt', 'tie or pocket square', 'Oxford or loafer'],
+      avoidItems: ['white or off-white', 'jeans', 'sneakers', 'overly casual clothing'],
+      searchTerms: ['suit', 'blazer chino', 'dress shirt', 'Oxford shoes', 'wedding guest attire'],
+      context: 'Match formality to the venue. Never wear white.',
+    },
+  },
+  {
+    patterns: [/beach\s+wedding|outdoor\s+wedding|garden\s+wedding|garden\s+party/i],
+    brief: {
+      event: 'beach / garden wedding or garden party', formality: 6,
+      dresscode: 'resort smart casual — light fabrics, warm tones, no heavy wool or dark suits',
+      typicalItems: ['linen suit or linen blazer', 'light chinos', 'linen or lightweight button-down', 'loafers or clean leather sandals'],
+      avoidItems: ['heavy wool suit', 'dark navy or black suit', 'athletic sneakers', 'white at weddings'],
+      searchTerms: ['linen suit', 'linen blazer', 'light chino', 'linen shirt', 'loafer'],
+      context: 'Lightweight breathable fabrics in warm or pastel tones. Linen is ideal.',
+    },
+  },
+  {
+    patterns: [/job\s+interview|business\s+interview/i],
+    brief: {
+      event: 'job interview', formality: 8,
+      dresscode: 'business professional — suit or blazer with trousers, polished and conservative',
+      typicalItems: ['suit or blazer', 'dress trousers', 'dress shirt', 'tie optional', 'Oxford or Derby shoes'],
+      avoidItems: ['jeans', 'sneakers', 'graphic tees', 'hoodies'],
+      searchTerms: ['business professional', 'slim suit', 'dress shirt', 'Oxford shoes', 'blazer trousers'],
+      context: 'When in doubt, overdress. For creative or tech roles, a sharp blazer over clean trousers works.',
+    },
+  },
+  {
+    patterns: [/\boffice\b|\bbusiness\s+casual\b|client\s+meeting/i],
+    brief: {
+      event: 'office / business casual', formality: 6,
+      dresscode: 'business casual — polished without being formal',
+      typicalItems: ['chino or dress trouser', 'Oxford shirt or clean polo', 'blazer or cardigan', 'loafers or clean leather sneakers'],
+      avoidItems: ['shorts', 'graphic tees', 'flip-flops', 'athletic wear'],
+      searchTerms: ['business casual', 'chino trouser', 'Oxford shirt', 'clean leather sneaker', 'blazer'],
+      context: 'Think elevated everyday — confident in a client meeting, not overdressed at lunch.',
+    },
+  },
+  {
+    patterns: [/holiday\s+party|office\s+party|christmas\s+party|new\s+year(?:'?s)?\s+(?:eve|party)/i],
+    brief: {
+      event: 'holiday / office party', formality: 6,
+      dresscode: 'festive smart casual — elevated basics with a bit more personality than usual',
+      typicalItems: ['smart trousers or dark jeans', 'clean button-down or festive knit', 'blazer', 'loafers or Chelsea boots'],
+      avoidItems: ['gym wear', 'very casual athletic wear'],
+      searchTerms: ['smart casual', 'slim trousers', 'festive shirt', 'blazer', 'Chelsea boot'],
+      context: 'A blazer goes a long way. You can add a bold color or pattern you might normally skip.',
+    },
+  },
+  {
+    patterns: [/\bgraduation\b/i],
+    brief: {
+      event: 'graduation', formality: 7,
+      dresscode: 'smart casual to business casual — clean and presentable for photos',
+      typicalItems: ['chino or dress trouser', 'button-down or Oxford shirt', 'blazer optional', 'loafers or clean leather sneakers'],
+      avoidItems: ['gym clothes', 'graphic tees', 'ripped jeans'],
+      searchTerms: ['smart casual', 'chino', 'Oxford shirt', 'blazer', 'clean sneaker'],
+      context: 'You\'re under a gown, but photos happen. Clean and put-together.',
+    },
+  },
+  {
+    patterns: [/\bcoachella\b|music\s+festival|outdoor\s+festival|bonnaroo|lollapalooza|burning\s+man/i],
+    brief: {
+      event: 'music festival', formality: 2,
+      dresscode: 'festival — expressive, comfortable, heat-appropriate, practical for crowds',
+      typicalItems: ['graphic tee or band tee', 'shorts or light pants', 'boots or chunky sneakers', 'hat', 'layering pieces for evening'],
+      avoidItems: ['suits', 'dress shoes', 'anything too precious to get dirty'],
+      searchTerms: ['festival outfit', 'graphic tee', 'denim shorts', 'boots', 'vintage casual'],
+      context: 'Comfort and expression both required. Layers for when the sun goes down.',
+    },
+  },
+  {
+    patterns: [/\bmasters\b|golf\s+tournament|pga\b|ryder\s+cup|us\s+open\s+golf/i],
+    brief: {
+      event: 'golf tournament (spectator)', formality: 5,
+      dresscode: 'country club casual — clean, neat, preppy',
+      typicalItems: ['polo shirt', 'pressed chino or khaki trouser', 'belt', 'loafers or clean leather sneakers or boat shoes'],
+      avoidItems: ['cargo shorts', 'loud graphic tees', 'athletic sneakers', 'flip-flops', 'torn jeans', 'sleeveless shirts'],
+      searchTerms: ['polo shirt', 'chino trouser', 'boat shoe', 'preppy casual', 'pressed khaki'],
+      context: 'A clean polo with pressed chinos is the uniform. No denim at Augusta.',
+    },
+  },
+  {
+    patterns: [/\bmet\s+gala\b|fashion\s+week|red\s+carpet\b/i],
+    brief: {
+      event: 'red carpet / fashion event', formality: 9,
+      dresscode: 'statement formal — bold, intentional, fashion-forward',
+      typicalItems: ['tuxedo or statement suit', 'dress shirt', 'bold accessory', 'dress shoes'],
+      avoidItems: ['plain basics', 'anything unintentional', 'casual footwear'],
+      searchTerms: ['statement suit', 'fashion forward', 'bold blazer', 'dress shoes', 'formal'],
+      context: 'This is an occasion to take a fashion risk. A classic tuxedo works; a bold silhouette is even better.',
+    },
+  },
+  {
+    patterns: [/art\s+gallery|gallery\s+opening|museum\s+opening/i],
+    brief: {
+      event: 'art gallery opening', formality: 6,
+      dresscode: 'creative smart casual — intellectual, slightly artistic, effortlessly cool',
+      typicalItems: ['dark slim jeans or trousers', 'interesting shirt or turtleneck', 'blazer or structured jacket', 'clean boots or loafers'],
+      avoidItems: ['gym wear', 'very loud branding', 'flip-flops'],
+      searchTerms: ['smart casual', 'turtleneck', 'slim trousers', 'blazer', 'Chelsea boot'],
+      context: 'A turtleneck with a blazer is the uniform. Interesting textures or subtle prints work well.',
+    },
+  },
+];
 
-The user said: "${userMessage}"
-
-If this message references a SPECIFIC named event, venue, occasion, or activity that has known dress norms (e.g. "The Masters", "rooftop dinner party", "Coachella", "Kentucky Derby", "black tie gala", "office happy hour", "beach wedding"), produce a concise dress code brief.
-
-If the request is purely generic — just asking for "casual clothes", "something to wear", or vague categories with no specific context — return the literal string: null
-
-For specific occasions, respond with a JSON object:
-{
-  "event": "name of the event / occasion",
-  "formality": 7,
-  "dresscode": "one-sentence dress code description (e.g. 'smart casual — clean tailored pieces, no sneakers or jeans')",
-  "typicalItems": ["blazer", "chino trousers", "loafers", "button-down shirt"],
-  "avoidItems": ["cargo pants", "graphic tees", "athletic sneakers", "hoodies"],
-  "searchTerms": ["smart casual", "tailored chino", "oxford shirt", "leather loafer"],
-  "context": "one sentence of additional styling context or event-specific nuance"
-}
-
-Guidelines:
-- formality: 1 (beach/athleisure) to 10 (black tie). Dinner party = 6-7. Golf tournament = 5. Coachella = 2. Office = 5-6.
-- typicalItems: actual garments, 4-6 specific items
-- searchTerms: the exact style/clothing terms to USE in product search queries — concrete and specific, not vague
-- If the occasion has a well-known dress code (Masters: no shorts on course, Heritage Cup: khakis + polo), capture that nuance in context
-
-Return ONLY the JSON object or the string null — no markdown, no explanation.`;
-
-  try {
-    const resp = await client.messages.create({
-      model:     'claude-haiku-4-5-20251001',
-      max_tokens: 400,
-      messages:  [{ role: 'user', content: prompt }],
-    });
-    const text = resp.content[0]?.text?.trim() ?? '';
-    if (text === 'null' || !text.startsWith('{')) return null;
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) return null;
-    return JSON.parse(match[0]);
-  } catch {
-    return null;
+function researchOccasion(userMessage) {
+  for (const { patterns, brief } of OCCASION_BRIEFS) {
+    if (patterns.some(re => re.test(userMessage))) return brief;
   }
+  return null;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -1177,19 +1296,10 @@ async function runAgent(message, conversationHistory, userId, recentConversation
 
   // ── OCCASION RESEARCH ─────────────────────────────────────────────
   // Only trigger for messages that suggest a specific named event/venue/occasion.
-  // Generic requests ("summer clothes", "a shirt") return null immediately.
-  // Hard 6-second cap so this never blocks the pipeline.
-  const hasSpecificEvent = /\b(dinner\s+party|rooftop|gala|wedding|graduation|prom|cocktail|black\s+tie|white\s+tie|garden\s+party|brunch\s+at|yacht|polo|golf\s+tournament|masters|wimbledon|derby|coachella|burning\s+man|met\s+gala|oscars|grammy|festival|concert|date\s+night|art\s+basel|fashion\s+week|charity|fundraiser|conference|premiere|opening\s+night|job\s+interview|office\s+party|holiday\s+party|birthday\s+party|bachelorette|bachelor|rehearsal\s+dinner|bar\s+mitzvah|bat\s+mitzvah|quinceanera|eid|diwali\s+party|new\s+year|halloween)\b/i.test(message);
-
-  let occasionResearch = null;
-  if (hasSpecificEvent) {
-    occasionResearch = await Promise.race([
-      researchOccasion(message),
-      new Promise(resolve => setTimeout(() => resolve(null), 6000)),
-    ]);
-    if (occasionResearch) {
-      console.log(`[occasion-research] "${occasionResearch.event}" (formality ${occasionResearch.formality}/10): ${occasionResearch.dresscode}`);
-    }
+  // Instant static lookup — zero latency, no API call
+  const occasionResearch = researchOccasion(message);
+  if (occasionResearch) {
+    console.log(`[occasion-research] "${occasionResearch.event}" (formality ${occasionResearch.formality}/10)`);
   }
 
   // ── SLOT ENGINE: deterministic per-item search ────────────────────
