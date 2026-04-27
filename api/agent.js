@@ -378,6 +378,7 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget, refinemen
       // Tag Lens results with visual bonus; text results get no tag
       const lensProducts  = (visualResult.products ?? []).map(p => ({ ...p, _visualBonus: effectiveVisualBonus }));
       const textProducts  = textResults.flat();
+      console.log(`[slot-raw] "${slot.label}": lens=${lensProducts.length} text=${textProducts.length} (textQueries=${textQueries.length})`);
 
       // Register brands from this slot so subsequent slots can avoid monoculture
       [...lensProducts, ...textProducts].forEach(p => { if (p.brand) usedBrands.add(p.brand); });
@@ -428,6 +429,12 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget, refinemen
       const kwFiltered = slot.keywords?.length
         ? scored.filter(p => slot.keywords.some(kw => (p.name ?? '').toLowerCase().includes(kw)))
         : scored;
+
+      console.log(`[slot-filter] "${slot.label}": merged=${merged.length} catFiltered=${unique.length} occasionFiltered=${occasionFiltered.length} scored=${scored.length} kwFiltered=${kwFiltered.length} keywords=[${(slot.keywords ?? []).join(',')}]`);
+      if (kwFiltered.length === 0 && scored.length > 0) {
+        console.warn(`[slot-filter] "${slot.label}" kw-filter wiped all ${scored.length} products — sample names: ${scored.slice(0,3).map(p => `"${p.name}"`).join(', ')}`);
+      }
+
       // Use keyword-filtered pool as long as ≥1 item matches — never fall back to wrong-category items.
       // Only revert to full scored pool when the slot has no specific keywords (generic slot).
       const kwPool = (slot.keywords?.length && kwFiltered.length === 0) ? scored : kwFiltered;

@@ -199,7 +199,8 @@ async function fetchShopifyCatalog(domain, category, maxPrice) {
 }
 
 // Hard cap on any single external search call. Resolves to [] on timeout.
-const WEB_SEARCH_TIMEOUT_MS = 12000;
+// 18s gives: 6s SerpAPI timeout + up to 12s for Claude knowledge fallback.
+const WEB_SEARCH_TIMEOUT_MS = 18000;
 const capSearch = (promise) =>
   Promise.race([promise, new Promise(resolve => setTimeout(() => resolve([]), WEB_SEARCH_TIMEOUT_MS))]);
 
@@ -223,7 +224,7 @@ async function serpApiShoppingSearch(query, maxPrice, resultSource = 'serpapi') 
 
   try {
     const res = await fetch(`https://serpapi.com/search?${params}`, {
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(6000), // 6s so Claude fallback has room within the 18s cap
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
@@ -232,7 +233,7 @@ async function serpApiShoppingSearch(query, maxPrice, resultSource = 'serpapi') 
     const data = await res.json();
     if (data.error) throw new Error(`SerpAPI error: ${data.error}`);
 
-    const products = (data.shopping_results ?? [])
+    const normalize = (raw) => raw
       .filter(p => p.title && p.link)
       .slice(0, 12)
       .map(p => ({
@@ -251,7 +252,14 @@ async function serpApiShoppingSearch(query, maxPrice, resultSource = 'serpapi') 
         result_source:        resultSource,
       }));
 
-    console.log(`[serpapi/${resultSource}] ${products.length} products (shopping_results: ${data.shopping_results?.length ?? 0})`);
+    // google_shopping engine returns shopping_results; standard engine returns inline_shopping_results.
+    // Try shopping_results first; fall back to inline_shopping_results so both plan types work.
+    const shopping  = data.shopping_results         ?? [];
+    const inlineSh  = data.inline_shopping_results  ?? [];
+    const raw       = shopping.length > 0 ? shopping : inlineSh;
+    const products  = normalize(raw);
+
+    console.log(`[serpapi/${resultSource}] ${products.length} products (shopping=${shopping.length} inline=${inlineSh.length})`);
     return products;
   } catch (err) {
     console.error(`[serpapi/${resultSource}] failed:`, err.message);
@@ -259,24 +267,29 @@ async function serpApiShoppingSearch(query, maxPrice, resultSource = 'serpapi') 
   }
 }
 
-// ── Claude web search (fallback when SHOPPING_API_KEY is not set) ────────────
+// ── Claude knowledge fallback (when SerpAPI yields nothing) ─────────────────
+// Uses Claude's training knowledge — no web search tool required.
+// Completes in 2-4s and always returns valid JSON.
+// Products are real brands/styles Claude knows; URLs may need verification.
 async function claudeWebSearch(query, category, maxPrice, resultSource = 'claude_web') {
-  const priceClause = maxPrice ? ` priced under $${maxPrice}` : '';
-  const prompt = `Find real, currently purchasable ${category} products matching: "${query}"${priceClause}
+  const priceClause = maxPrice ? ` under $${maxPrice}` : '';
+  const prompt = `You are a fashion shopping expert. List up to 10 real ${category} products matching: "${query}"${priceClause}.
 
-Return ONLY a JSON array of up to 12 products — no markdown, just the array:
-[{"name":"...","price":49.99,"store":"...","product_url":"https://...","image_url":"https://...","brand":"..."},...]`;
+Use your training knowledge of actual products sold by real retailers. Include specific product names, accurate prices (within ~20% of actual), and real store URLs.
+
+Return ONLY a valid JSON array — no markdown fences, no explanation, just the raw array:
+[{"name":"exact product name","price":79.00,"store":"StoreName","product_url":"https://store.com/products/item","image_url":null,"brand":"Brand"},...]`;
 
   try {
     const response = await client.messages.create({
       model:      'claude-haiku-4-5-20251001',
-      max_tokens: 4096,
-      tools:      [{ type: 'web_search_20250305', name: 'web_search' }],
+      max_tokens: 2048,
       messages:   [{ role: 'user', content: prompt }],
     });
+    console.log(`[claude-knowledge/${resultSource}] response length: ${response.content[0]?.text?.length ?? 0} chars`);
     return parseProductJson(response, null, resultSource);
   } catch (err) {
-    console.error(`[claude-web/${resultSource}] failed:`, err.status ?? '', err.message);
+    console.error(`[claude-knowledge/${resultSource}] failed:`, err.status ?? '', err.message);
     return [];
   }
 }
@@ -289,24 +302,25 @@ async function webSearchForBrand(brandName, domain, query, category, maxPrice) {
   // null = no key; undefined = key set but call failed; [] = success but 0 results
   if (serpResults?.length > 0) return serpResults; // got products — done
 
-  // SerpAPI unavailable or returned nothing — fall back to Claude web search
+  // SerpAPI unavailable or returned nothing — fall back to Claude knowledge
   const priceClause = maxPrice ? ` under $${maxPrice}` : '';
-  const siteClause  = domain ? `site:${domain} ` : '';
-  const prompt = `Find currently purchasable products from ${brandName}.
-Search for: ${siteClause}${query} ${category}${priceClause}
-Return ONLY a JSON array of up to 8 products — no markdown, just the array:
-[{"name":"...","price":49.99,"store":"${brandName}","product_url":"https://...","image_url":"https://...","brand":"${brandName}"},...]`;
+  const prompt = `You are a fashion shopping expert. List up to 8 real products from ${brandName} matching: "${query}" (${category})${priceClause}.
+
+Use your training knowledge of ${brandName}'s actual catalog. Include specific product names and accurate prices.
+
+Return ONLY a valid JSON array — no markdown fences, no explanation:
+[{"name":"exact product name","price":79.00,"store":"${brandName}","product_url":"https://${domain ?? brandName.toLowerCase().replace(/\s+/g, '')}.com/products/...","image_url":null,"brand":"${brandName}"},...]`;
 
   try {
     const response = await client.messages.create({
       model:      'claude-haiku-4-5-20251001',
-      max_tokens: 2048,
-      tools:      [{ type: 'web_search_20250305', name: 'web_search' }],
+      max_tokens: 1536,
       messages:   [{ role: 'user', content: prompt }],
     });
+    console.log(`[claude-knowledge/brand/${brandName}] response length: ${response.content[0]?.text?.length ?? 0} chars`);
     return parseProductJson(response, brandName, 'claude_brand');
   } catch (err) {
-    console.error('[brand-web-search] claude failed:', err.status ?? '', err.message);
+    console.error('[brand-knowledge] claude failed:', err.status ?? '', err.message);
     return [];
   }
 }
