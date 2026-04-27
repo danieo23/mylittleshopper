@@ -1176,12 +1176,20 @@ async function runAgent(message, conversationHistory, userId, recentConversation
   const occasion = occasionWordsEarly.size ? [...occasionWordsEarly].join(' ') : null;
 
   // ── OCCASION RESEARCH ─────────────────────────────────────────────
-  // When a named event/venue is mentioned, research its dress code before
-  // searching. This gives Lychee stylist-level context: formality score,
-  // what to search for, what to avoid — not just a generic occasion keyword.
-  const occasionResearch = await researchOccasion(message);
-  if (occasionResearch) {
-    console.log(`[occasion-research] "${occasionResearch.event}" (formality ${occasionResearch.formality}/10): ${occasionResearch.dresscode}`);
+  // Only trigger for messages that suggest a specific named event/venue/occasion.
+  // Generic requests ("summer clothes", "a shirt") return null immediately.
+  // Hard 6-second cap so this never blocks the pipeline.
+  const hasSpecificEvent = /\b(dinner\s+party|rooftop|gala|wedding|graduation|prom|cocktail|black\s+tie|white\s+tie|garden\s+party|brunch\s+at|yacht|polo|golf\s+tournament|masters|wimbledon|derby|coachella|burning\s+man|met\s+gala|oscars|grammy|festival|concert|date\s+night|art\s+basel|fashion\s+week|charity|fundraiser|conference|premiere|opening\s+night|job\s+interview|office\s+party|holiday\s+party|birthday\s+party|bachelorette|bachelor|rehearsal\s+dinner|bar\s+mitzvah|bat\s+mitzvah|quinceanera|eid|diwali\s+party|new\s+year|halloween)\b/i.test(message);
+
+  let occasionResearch = null;
+  if (hasSpecificEvent) {
+    occasionResearch = await Promise.race([
+      researchOccasion(message),
+      new Promise(resolve => setTimeout(() => resolve(null), 6000)),
+    ]);
+    if (occasionResearch) {
+      console.log(`[occasion-research] "${occasionResearch.event}" (formality ${occasionResearch.formality}/10): ${occasionResearch.dresscode}`);
+    }
   }
 
   // ── SLOT ENGINE: deterministic per-item search ────────────────────
