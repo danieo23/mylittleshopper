@@ -34,7 +34,7 @@ function UserInfoPanel({ userId }) {
 
   useEffect(() => {
     if (!userId) return;
-    supabase.from('users').select('name, location, country_code, address').eq('id', userId).single()
+    supabase.from('users').select('name, location, country_code, address').eq('id', userId).maybeSingle()
       .then(({ data }) => {
         if (data) setForm({
           name:         data.name         ?? '',
