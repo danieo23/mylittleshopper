@@ -2,6 +2,7 @@ import Anthropic          from '@anthropic-ai/sdk';
 import { createClient }   from '@supabase/supabase-js';
 import { enrichProductsWithThumbnailAnalysis } from './analyze_product_thumbnail.js';
 
+// Used only by claudeKnowledgeFallback
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const supabase = createClient(
@@ -135,66 +136,9 @@ async function selectBrandsFromCatalog(styleDna, query, category, maxPrice, excl
     .sort((a, b) => b._overlap - a._overlap)
     .slice(0, 20); // send top 20 to Claude for final ranking
 
-  // If 5 or fewer candidates, skip Claude and return directly
-  if (preSorted.length <= 5) {
-    console.log(`[brand-catalog] ${preSorted.length} candidates, skipping Claude rank`);
-    return preSorted;
-  }
-
-  // Build compact candidate list for Claude
-  const candidateLines = preSorted.map((b, i) =>
-    `${i + 1}. "${b.slug}" — ${b.name} | ${b.price_tier} | tags: ${[...(b.aesthetic_tags ?? []), ...(b.cultural_signals ?? [])].join(', ')}`
-  ).join('\n');
-
-  const dnaLine = [
-    styleDna?.primary_style_category ? `Aesthetic: ${styleDna.primary_style_category}` : null,
-    styleDna?.dominant_fit           ? `Fit: ${styleDna.dominant_fit}`                  : null,
-    userTags.length                  ? `Signals: ${userTags.slice(0, 5).join(', ')}`    : null,
-    maxPrice                         ? `Budget ceiling: $${maxPrice}`                   : null,
-  ].filter(Boolean).join(' | ');
-
-  const prompt = `Rank the top 5 brands for this user from the candidate list.
-
-USER PROFILE: ${dnaLine || 'unknown'}
-ITEM NEEDED: "${query}" (${category})${isElevatedOccasion(query) ? ' — ELEVATED/FORMAL occasion' : ''}
-
-CANDIDATES:
-${candidateLines}
-
-Return ONLY a JSON array of up to 5 slugs, best first. No explanation:
-["slug1","slug2","slug3","slug4","slug5"]`;
-
-  try {
-    const resp = await Promise.race([
-      client.messages.create({
-        model:      'claude-haiku-4-5-20251001',
-        max_tokens: 256,
-        messages:   [{ role: 'user', content: prompt }],
-      }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('brand-rank timeout')), 7000)),
-    ]);
-
-    const text  = resp.content[0]?.text ?? '';
-    const match = text.match(/\[\s*"[\s\S]*"\s*\]/);
-    if (!match) throw new Error('no JSON array in response');
-
-    const slugs   = JSON.parse(match[0]).slice(0, 5);
-    const ranked  = slugs
-      .map(s => preSorted.find(b => b.slug === s))
-      .filter(Boolean);
-
-    // Append any high-overlap candidates Claude didn't pick (safety net)
-    const slugSet = new Set(slugs);
-    const extras  = preSorted.filter(b => !slugSet.has(b.slug)).slice(0, 5 - ranked.length);
-    const result  = [...ranked, ...extras].slice(0, 5);
-
-    console.log(`[brand-catalog] ranked: ${result.map(b => b.name).join(', ')}`);
-    return result;
-  } catch (err) {
-    // Timeout or parse failure — fall back to tag-overlap ordering
-    console.warn('[brand-catalog] Claude rank failed, using overlap order:', err.message);
-    return preSorted.slice(0, 5);
-  }
+  const result = preSorted.slice(0, 5);
+  console.log(`[brand-catalog] selected: ${result.map(b => b.name).join(', ')}`);
+  return result;
 }
 
 // ── Shopify catalog fetch ─────────────────────────────────────────────────
