@@ -193,7 +193,7 @@ function parseRequestSlots(text) {
  * Build a style-aware search query for a specific slot.
  * Always incorporates DNA (fit, color, style) and style tags — profile is always active.
  */
-function buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags = [], ageStyleDefault = '', refinementPlan = null) {
+function buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags = [], ageStyleDefault = '', refinementPlan = null, occasionResearch = null) {
   // Fit only makes sense for bottoms/outerwear — tops are item-specific enough
   const TOP_SLOT_KEYS = ['graphic_tee','band_tee','polo','tank_top','button_down','linen_shirt','oversized_tee','generic_top'];
   const slotKey = Object.entries(SLOT_DEFS).find(([, def]) =>
@@ -220,8 +220,11 @@ function buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags = [], ageSt
   const styleContext = [dnaStyle, ...extraTags].filter(Boolean).join(' ').trim()
     || ageStyleDefault;
 
-  // Occasion words (max 2) for context
-  const occ = occasion ? occasion.split(' ').slice(0, 2).join(' ') : '';
+  // Occasion research terms — use event-specific dress code language instead of a bare occasion word.
+  // e.g. "dinner party" → "smart casual tailored" instead of just "dinner"
+  // When research is available, it replaces the generic occasion keyword entirely.
+  const researchTerms = occasionResearch?.searchTerms?.slice(0, 3).join(' ') ?? '';
+  const occ = researchTerms || (occasion ? occasion.split(' ').slice(0, 2).join(' ') : '');
 
   // Refinement additions (e.g. "vintage washed") append to query; removals strip matching words
   const queryAdditions = (refinementPlan?.queryAdditions ?? []).slice(0, 3).join(' ');
@@ -243,7 +246,7 @@ function buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags = [], ageSt
 /**
  * Execute one search per slot in parallel. Returns { slotId: products[] }.
  */
-async function fillSlots(requiredSlots, userProfile, occasion, budget, refinementPlan = null) {
+async function fillSlots(requiredSlots, userProfile, occasion, budget, refinementPlan = null, occasionResearch = null) {
   const dna           = userProfile.styleDna;
   const gender        = userProfile.profile?.gender ?? userProfile.gender;
   const genderPrefix  = gender === 'men' ? "men's" : gender === 'nonbinary' ? 'unisex' : "women's";
@@ -287,7 +290,7 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget, refinemen
     const count = groupSlots.length;
 
     try {
-      const mainQuery = buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags, ageStyleDefault, refinementPlan);
+      const mainQuery = buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags, ageStyleDefault, refinementPlan, occasionResearch);
       console.log(`[slot-group] "${slot.label}" x${count} | query: "${mainQuery}"`);
 
       // Build text query list (supplement — runs in parallel with visual search)
@@ -506,6 +509,54 @@ function hexToBucket(hex) {
   return 'pink';
 }
 
+// ── Occasion research ─────────────────────────────────────────────
+// When the user mentions a specific event, venue, or activity,
+// this generates a styled dress code brief using Claude's training knowledge.
+// Returns null for generic/vague occasions so no extra latency is added.
+async function researchOccasion(userMessage) {
+  const prompt = `You are an expert fashion stylist with encyclopedic knowledge of dress codes, events, venues, and occasion attire.
+
+The user said: "${userMessage}"
+
+If this message references a SPECIFIC named event, venue, occasion, or activity that has known dress norms (e.g. "The Masters", "rooftop dinner party", "Coachella", "Kentucky Derby", "black tie gala", "office happy hour", "beach wedding"), produce a concise dress code brief.
+
+If the request is purely generic — just asking for "casual clothes", "something to wear", or vague categories with no specific context — return the literal string: null
+
+For specific occasions, respond with a JSON object:
+{
+  "event": "name of the event / occasion",
+  "formality": 7,
+  "dresscode": "one-sentence dress code description (e.g. 'smart casual — clean tailored pieces, no sneakers or jeans')",
+  "typicalItems": ["blazer", "chino trousers", "loafers", "button-down shirt"],
+  "avoidItems": ["cargo pants", "graphic tees", "athletic sneakers", "hoodies"],
+  "searchTerms": ["smart casual", "tailored chino", "oxford shirt", "leather loafer"],
+  "context": "one sentence of additional styling context or event-specific nuance"
+}
+
+Guidelines:
+- formality: 1 (beach/athleisure) to 10 (black tie). Dinner party = 6-7. Golf tournament = 5. Coachella = 2. Office = 5-6.
+- typicalItems: actual garments, 4-6 specific items
+- searchTerms: the exact style/clothing terms to USE in product search queries — concrete and specific, not vague
+- If the occasion has a well-known dress code (Masters: no shorts on course, Heritage Cup: khakis + polo), capture that nuance in context
+
+Return ONLY the JSON object or the string null — no markdown, no explanation.`;
+
+  try {
+    const resp = await client.messages.create({
+      model:     'claude-haiku-4-5-20251001',
+      max_tokens: 400,
+      messages:  [{ role: 'user', content: prompt }],
+    });
+    const text = resp.content[0]?.text?.trim() ?? '';
+    if (text === 'null' || !text.startsWith('{')) return null;
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    return JSON.parse(match[0]);
+  } catch {
+    return null;
+  }
+}
+
 // ── Helpers ────────────────────────────────────────────────────────
 function formatRelativeDate(iso) {
   const d    = new Date(iso);
@@ -625,7 +676,7 @@ Age-informed style baseline (supplement when DNA is sparse — actual DNA and st
 }
 
 // ── System prompt ──────────────────────────────────────────────────
-function buildSystemPrompt(userProfile, recentConversations = [], priorUserTurns = 0) {
+function buildSystemPrompt(userProfile, recentConversations = [], priorUserTurns = 0, occasionResearch = null) {
   const { styleDna, confidenceLevel, imageCount, wallet,
           favoriteStores, storeOpennessTiers, sizes, styleTags, pinterestBoardUrls, gender, ageRange } = userProfile;
 
@@ -705,7 +756,21 @@ USER PROFILE (do not call any tool to fetch this — it is complete):
 ${agePrior}
 ${!dnaActive ? '\n⚠ Style DNA has not been synthesized yet. Use age-group baseline + style tags + aspiration gap as your primary signal until wardrobe/Pinterest analysis runs.' : ''}
 
-${recentConversations.length ? `━━━ RECENT SESSIONS ━━━
+${occasionResearch ? `━━━ OCCASION RESEARCH — read this before searching ━━━
+
+You researched what is typically worn to this specific event. Use this as your primary styling brief — it tells you exactly what the dress code is, which items belong, and which don't. This is stylist-level knowledge: apply it.
+
+Event: ${occasionResearch.event}
+Formality: ${occasionResearch.formality}/10
+Dress code: ${occasionResearch.dresscode}
+Typical items: ${occasionResearch.typicalItems.join(', ')}
+Avoid these items entirely: ${occasionResearch.avoidItems.join(', ')}
+Search terms to use: ${occasionResearch.searchTerms.join(', ')}
+Stylist context: ${occasionResearch.context}
+
+This dress code overrides the user's everyday style defaults when they conflict. A streetwear-coded user going to a rooftop dinner still needs smart casual pieces — lean into what's appropriate for the occasion while keeping the color palette and fit preference from their DNA. Never recommend items from the "avoid" list above.
+
+` : ''}${recentConversations.length ? `━━━ RECENT SESSIONS ━━━
 
 The user's last ${recentConversations.length} shopping session${recentConversations.length > 1 ? 's' : ''} (for continuity — do not re-ask about these):
 ${recentConversations.map((c, i) => `  ${i + 1}. "${c.title}" — ${formatRelativeDate(c.updated_at)}`).join('\n')}
@@ -1110,6 +1175,15 @@ async function runAgent(message, conversationHistory, userId, recentConversation
   }
   const occasion = occasionWordsEarly.size ? [...occasionWordsEarly].join(' ') : null;
 
+  // ── OCCASION RESEARCH ─────────────────────────────────────────────
+  // When a named event/venue is mentioned, research its dress code before
+  // searching. This gives Lychee stylist-level context: formality score,
+  // what to search for, what to avoid — not just a generic occasion keyword.
+  const occasionResearch = await researchOccasion(message);
+  if (occasionResearch) {
+    console.log(`[occasion-research] "${occasionResearch.event}" (formality ${occasionResearch.formality}/10): ${occasionResearch.dresscode}`);
+  }
+
   // ── SLOT ENGINE: deterministic per-item search ────────────────────
   // Parse user's request into typed slots and fill each one with a
   // targeted search. This is the primary path for specific-item requests.
@@ -1139,7 +1213,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
     const replyResp = await client.messages.create({
       model:      LOOP_MODEL,
       max_tokens: 256,
-      system:     buildSystemPrompt(userProfile, recentConversations),
+      system:     buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch),
       messages:   [...conversationHistory, { role: 'user', content: message }, { role: 'user', content: ctxMsg }],
     });
     const { reply, choices } = parseChoices(replyResp.content.find(b => b.type === 'text')?.text ?? '');
@@ -1190,7 +1264,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
           const replyResp = await client.messages.create({
             model:      LOOP_MODEL,
             max_tokens: 256,
-            system:     buildSystemPrompt(userProfile, recentConversations),
+            system:     buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch),
             messages:   [...conversationHistory, { role: 'user', content: message }, { role: 'user', content: ctxMsg }],
           });
           const { reply, choices } = parseChoices(replyResp.content.find(b => b.type === 'text')?.text ?? '');
@@ -1222,7 +1296,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
       const clarifyResp = await client.messages.create({
         model:      LOOP_MODEL,
         max_tokens: 200,
-        system:     buildSystemPrompt(userProfile, recentConversations),
+        system:     buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch),
         messages:   [...conversationHistory, { role: 'user', content: message }, { role: 'user', content: ctxMsg }],
       });
       const { reply: clarifyText, choices: clarifyChoices } = parseChoices(
@@ -1244,7 +1318,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
       const clarifyResp = await client.messages.create({
         model:      LOOP_MODEL,
         max_tokens: 200,
-        system:     buildSystemPrompt(userProfile, recentConversations),
+        system:     buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch),
         messages:   [...conversationHistory, { role: 'user', content: message }, { role: 'user', content: ctxMsg }],
       });
       const { reply: clarifyText, choices: clarifyChoices } = parseChoices(
@@ -1254,7 +1328,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
     }
 
     const budget      = userProfile.wallet?.balance ?? 500;
-    const slotCache   = await fillSlots(requiredSlots, userProfile, occasion, budget);
+    const slotCache   = await fillSlots(requiredSlots, userProfile, occasion, budget, null, occasionResearch);
     const filled      = requiredSlots.filter(s => (slotCache[s.id]?.length ?? 0) > 0);
     const unfilled    = requiredSlots.filter(s => !(slotCache[s.id]?.length ?? 0));
 
@@ -1274,7 +1348,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
       const replyResp = await client.messages.create({
         model:      LOOP_MODEL,
         max_tokens: 256,
-        system:     buildSystemPrompt(userProfile, recentConversations),
+        system:     buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch),
         messages:   [...conversationHistory, { role: 'user', content: message }, { role: 'user', content: ctxMsg }],
       });
       const { reply, choices } = parseChoices(replyResp.content.find(b => b.type === 'text')?.text ?? '');
@@ -1415,7 +1489,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
   let response = await client.messages.create({
     model:       LOOP_MODEL,
     max_tokens:  LOOP_TOKENS,
-    system:      buildSystemPrompt(userProfile, recentConversations, priorUserTurns),
+    system:      buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch),
     tools:       TOOLS,
     tool_choice: { type: 'auto' },
     messages,
@@ -1522,7 +1596,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
     response = await client.messages.create({
       model:       LOOP_MODEL,
       max_tokens:  LOOP_TOKENS,
-      system:      buildSystemPrompt(userProfile, recentConversations, priorUserTurns),
+      system:      buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch),
       tools:       TOOLS,
       tool_choice: { type: 'auto' },
       messages,
@@ -1568,7 +1642,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
     const recovery = await client.messages.create({
       model:      LOOP_MODEL,
       max_tokens: 512,
-      system:     buildSystemPrompt(userProfile, recentConversations, priorUserTurns),
+      system:     buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch),
       messages,
     });
     const rawRecovery = recovery.content.find(b => b.type === 'text')?.text
