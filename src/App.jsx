@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard';
 import StyleVault from './pages/StyleVault';
 import StyleQuiz from './pages/StyleQuiz';
 import Orders from './pages/Orders';
+import AdminBrands from './pages/AdminBrands';
 import DashboardLayout from './components/DashboardLayout';
 
 function WithLayout({ children }) {
@@ -24,6 +25,7 @@ export default function App() {
         <Route path="/style-vault" element={<WithLayout><StyleVault /></WithLayout>} />
         <Route path="/style-quiz" element={<StyleQuiz />} />
         <Route path="/orders" element={<WithLayout><Orders /></WithLayout>} />
+        <Route path="/admin/brands" element={<AdminBrands />} />
       </Routes>
     </Router>
   );

@@ -1,10 +1,15 @@
-import Anthropic from '@anthropic-ai/sdk';
+import Anthropic          from '@anthropic-ai/sdk';
+import { createClient }   from '@supabase/supabase-js';
 import { enrichProductsWithThumbnailAnalysis } from './analyze_product_thumbnail.js';
 
-const client = new Anthropic({
-  apiKey:         process.env.ANTHROPIC_API_KEY,
-  defaultHeaders: { 'anthropic-beta': 'web-search-2025-03-05' },
-});
+const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
+
+// ── Utilities ─────────────────────────────────────────────────────────────
 
 function parsePrice(raw) {
   if (typeof raw === 'number') return raw;
@@ -46,102 +51,155 @@ function hexToBucket(hex) {
   return 'pink';
 }
 
-// Build a compact human-readable style brief from DNA for brand selection.
-// Includes OCR texts (verbatim garment text), cultural signals, and
-// profile-recommended brands so every search starts from the full picture.
-function buildStyleBrief(styleDna, query, category) {
-  if (!styleDna) return `Item needed: ${query} (${category})`;
+// ── Brand selection from curated catalog ─────────────────────────────────
 
-  const colors = [...new Set([
-    ...(styleDna.primary_colors   ?? []).map(hexToBucket),
-    ...(styleDna.secondary_colors ?? []).map(hexToBucket),
-  ].filter(Boolean))].slice(0, 4);
-
-  const dislikes  = styleDna.explicit_dislikes ?? {};
-  const cultural  = dislikes.cultural_profile ?? [];
-  // Verbatim text read off garments via OCR — band names, logos, slogans
-  const ocrTexts  = dislikes.ocr_summary ?? [];
-  // Brands identified by the wardrobe profile as the best aesthetic matches
-  const profBrands = dislikes.profile_recommended_brands ?? [];
-
-  const parts = [
-    `Primary aesthetic: ${styleDna.primary_style_category ?? 'not specified'}`,
-    styleDna.secondary_categories?.length
-      ? `Secondary aesthetics: ${styleDna.secondary_categories.join(', ')}`
-      : null,
-    `Fit preference: ${styleDna.dominant_fit ?? 'not specified'}`,
-    colors.length ? `Core palette: ${colors.join(', ')}` : null,
-    ocrTexts.length
-      ? `Text found on owned garments — use ONLY to infer aesthetic identity, NEVER to search for these exact graphics or characters: ${ocrTexts.join(' | ')}` : null,
-    cultural.length ? `Cultural signals (inferred from owned items): ${cultural.join(', ')}` : null,
-    styleDna.brand_affinities?.length
-      ? `Wardrobe brand signals: ${styleDna.brand_affinities.slice(0, 5).join(', ')}`
-      : null,
-    profBrands.length
-      ? `Profile-recommended brands (highest aesthetic match): ${profBrands.join(', ')}`
-      : null,
-    `Formality range: ${styleDna.formality_range_min ?? 1}–${styleDna.formality_range_max ?? 5}/10`,
-    `Item needed: ${query} (${category})`,
-  ];
-
-  return parts.filter(Boolean).join('\n');
+// Maps maxPrice to allowed price tiers (± one tier for flexibility).
+function priceTiersForBudget(maxPrice) {
+  if (!maxPrice) return ['budget', 'mid', 'premium', 'luxury'];
+  if (maxPrice < 50)  return ['budget'];
+  if (maxPrice < 120) return ['budget', 'mid'];
+  if (maxPrice < 300) return ['mid', 'premium'];
+  if (maxPrice < 600) return ['premium', 'luxury'];
+  return ['luxury'];
 }
 
-// Stage 4: Claude selects up to 5 specific brands whose catalog best matches the style profile,
-// ranked by aesthetic match score. No web search — Claude's training knowledge is the signal.
-async function selectBrands(styleBrief, query, category, maxPrice, excludedBrands = []) {
-  const budgetNote    = maxPrice ? ` Budget ceiling: $${maxPrice}.` : '';
-  const excludedNote  = excludedBrands.length
-    ? `\n- Do NOT suggest these brands (already used in this outfit): ${excludedBrands.join(', ')}`
-    : '';
+// Detect elevated formality from query string (occasion terms injected by buildSlotQuery).
+function isElevatedOccasion(query) {
+  return /dinner|gala|wedding|formal|rooftop|event|office|business|smart.?casual|tailored|date.?night|cocktail/i.test(query);
+}
 
-  const prompt = `You are a fashion brand expert with deep knowledge of brand aesthetics. Based on the user's style profile, select up to 5 brands whose current catalog would have the highest density of matching items for this specific purchase, ranked best-first by aesthetic match.
+// Tag overlap count between user DNA tags and brand tags (case-insensitive substring match).
+function tagOverlap(brandTags, userTags) {
+  if (!brandTags?.length || !userTags?.length) return 0;
+  return userTags.filter(ut =>
+    brandTags.some(bt => bt.toLowerCase().includes(ut.toLowerCase()) || ut.toLowerCase().includes(bt.toLowerCase()))
+  ).length;
+}
 
-USER STYLE PROFILE:
-${styleBrief}
+/**
+ * Queries curated_brands for active Shopify brands matching budget/formality/gender,
+ * then uses Claude Haiku to rank the top 5 by aesthetic fit.
+ * Returns up to 5 full brand records in ranked order.
+ */
+async function selectBrandsFromCatalog(styleDna, query, category, maxPrice, excludedBrands = []) {
+  const tiers     = priceTiersForBudget(maxPrice);
+  const formal    = isElevatedOccasion(query);
 
-TASK: Find "${query}" in the "${category}" category.${budgetNote}
+  // Fetch all active Shopify brands within the price tier range
+  const { data: candidates, error } = await supabase
+    .from('curated_brands')
+    .select('*')
+    .eq('is_active', true)
+    .eq('is_shopify', true)
+    .in('price_tier', tiers)
+    .order('name');
 
-Selection rules:
-- The "Profile-recommended brands" line lists brands already identified as the best aesthetic match for this wardrobe — prefer these first if they sell the requested category
-- "Text found on owned garments" tells you their aesthetic identity — if you see music artist names (Radiohead, The Cure, etc.) the person buys from labels like Needles, Human Made, Stüssy, CPFM. If you see pop culture / superhero / character graphics, they lean vintage-inspired streetwear labels. CRITICAL: do NOT use these as literal search terms — they represent what the user ALREADY OWNS. Never pick a brand because it sells the same graphic they already have.
-- FORMALITY MATCH IS MANDATORY: Read the search query for occasion cues (dinner, party, date, office, wedding, rooftop, event, smart casual, formal, etc.). If the occasion is elevated (formality ≥ 6/10), do NOT select streetwear or skate brands (Stüssy, Supreme, Palace, BAPE, Carhartt WIP, etc.) even if they appear in wardrobe signals — those brands do not produce appropriate items for formal occasions. Instead pick brands that actually carry elevated smart casual or formal pieces (COS, ASOS, Reiss, Club Monaco, J.Crew, Ted Baker, Todd Snyder, AllSaints, Buck Mason, Everlane, etc.).
-- The brand MUST actually sell this category of item
-- Prefer brands with active online stores (DTC or specialty retail — not Amazon/Walmart)
-- Most DTC fashion brands run on Shopify; note this in the "shopify" field
-- Only suggest brands that sell at the stated budget${excludedNote}
+  if (error) {
+    console.error('[brand-catalog] Supabase query failed:', error.message);
+    return [];
+  }
 
-Return ONLY a JSON array ranked best-first, no markdown, no explanation:
-[
-  {"name":"Brand Name","domain":"brandname.com","shopify":true,"reason":"one-line why this fits the profile"},
-  ...
-]`;
+  // Filter in JS: excluded brands, formality gate, gender compatibility
+  const userGender = styleDna?.gender ?? null; // 'mens' | 'womens' | null
+  const filtered = (candidates ?? []).filter(brand => {
+    if (excludedBrands.some(e => e.toLowerCase() === brand.name.toLowerCase())) return false;
+    // Formal occasions: skip brands tagged streetwear or skate
+    if (formal && brand.aesthetic_tags?.some(t => /streetwear|skate/i.test(t))) return false;
+    // Gender: skip brands where gender_focus is opposite of user's
+    if (userGender === 'mens'   && brand.gender_focus === 'womens') return false;
+    if (userGender === 'womens' && brand.gender_focus === 'mens')   return false;
+    return true;
+  });
+
+  if (!filtered.length) {
+    console.warn('[brand-catalog] no brands passed filters — returning empty');
+    return [];
+  }
+
+  // Build user tag list from DNA for overlap scoring
+  const userTags = [
+    styleDna?.primary_style_category,
+    ...(styleDna?.secondary_categories ?? []),
+    ...(styleDna?.explicit_dislikes?.cultural_profile ?? []),
+  ].filter(Boolean).map(t => t.toLowerCase());
+
+  // Score by tag overlap and sort — gives Claude a pre-ranked list
+  const preSorted = filtered
+    .map(brand => ({
+      ...brand,
+      _overlap: tagOverlap(
+        [...(brand.aesthetic_tags ?? []), ...(brand.cultural_signals ?? [])],
+        userTags
+      ),
+    }))
+    .sort((a, b) => b._overlap - a._overlap)
+    .slice(0, 20); // send top 20 to Claude for final ranking
+
+  // If 5 or fewer candidates, skip Claude and return directly
+  if (preSorted.length <= 5) {
+    console.log(`[brand-catalog] ${preSorted.length} candidates, skipping Claude rank`);
+    return preSorted;
+  }
+
+  // Build compact candidate list for Claude
+  const candidateLines = preSorted.map((b, i) =>
+    `${i + 1}. "${b.slug}" — ${b.name} | ${b.price_tier} | tags: ${[...(b.aesthetic_tags ?? []), ...(b.cultural_signals ?? [])].join(', ')}`
+  ).join('\n');
+
+  const dnaLine = [
+    styleDna?.primary_style_category ? `Aesthetic: ${styleDna.primary_style_category}` : null,
+    styleDna?.dominant_fit           ? `Fit: ${styleDna.dominant_fit}`                  : null,
+    userTags.length                  ? `Signals: ${userTags.slice(0, 5).join(', ')}`    : null,
+    maxPrice                         ? `Budget ceiling: $${maxPrice}`                   : null,
+  ].filter(Boolean).join(' | ');
+
+  const prompt = `Rank the top 5 brands for this user from the candidate list.
+
+USER PROFILE: ${dnaLine || 'unknown'}
+ITEM NEEDED: "${query}" (${category})${isElevatedOccasion(query) ? ' — ELEVATED/FORMAL occasion' : ''}
+
+CANDIDATES:
+${candidateLines}
+
+Return ONLY a JSON array of up to 5 slugs, best first. No explanation:
+["slug1","slug2","slug3","slug4","slug5"]`;
 
   try {
-    const apiCall = client.messages.create({
-      model:      'claude-haiku-4-5-20251001',
-      max_tokens: 768,
-      messages:   [{ role: 'user', content: prompt }],
-    });
-    const response = await Promise.race([
-      apiCall,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('brand-select timeout')), 7000)),
+    const resp = await Promise.race([
+      client.messages.create({
+        model:      'claude-haiku-4-5-20251001',
+        max_tokens: 256,
+        messages:   [{ role: 'user', content: prompt }],
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('brand-rank timeout')), 7000)),
     ]);
-    const text  = response.content[0]?.text ?? '';
-    console.log('[brand-select] raw response (first 200):', text.slice(0, 200));
-    const match = text.match(/\[\s*\{[\s\S]*\}\s*\]/);
-    if (!match) { console.warn('[brand-select] no JSON array found in response'); return []; }
-    return JSON.parse(match[0]);
+
+    const text  = resp.content[0]?.text ?? '';
+    const match = text.match(/\[\s*"[\s\S]*"\s*\]/);
+    if (!match) throw new Error('no JSON array in response');
+
+    const slugs   = JSON.parse(match[0]).slice(0, 5);
+    const ranked  = slugs
+      .map(s => preSorted.find(b => b.slug === s))
+      .filter(Boolean);
+
+    // Append any high-overlap candidates Claude didn't pick (safety net)
+    const slugSet = new Set(slugs);
+    const extras  = preSorted.filter(b => !slugSet.has(b.slug)).slice(0, 5 - ranked.length);
+    const result  = [...ranked, ...extras].slice(0, 5);
+
+    console.log(`[brand-catalog] ranked: ${result.map(b => b.name).join(', ')}`);
+    return result;
   } catch (err) {
-    console.error('[brand-select] failed:', err.message);
-    return [];
+    // Timeout or parse failure — fall back to tag-overlap ordering
+    console.warn('[brand-catalog] Claude rank failed, using overlap order:', err.message);
+    return preSorted.slice(0, 5);
   }
 }
 
-// Common Shopify collection slugs per category — tried in order until one returns products.
-// "all" is intentionally excluded for specific categories: fetching all products returns mixed
-// types (pants in a tee search, etc.) and the keyword filter can't reliably clean that up.
-// If no slug matches, fetchShopifyCatalog returns [] and the brand-targeted web search runs instead.
+// ── Shopify catalog fetch ─────────────────────────────────────────────────
+
+// Standard collection slugs per category tried when brand has no custom slugs configured.
 const SHOPIFY_COLLECTION_MAP = {
   tops:        ['t-shirts', 'tops', 'shirts', 'graphic-tees', 'tees', 'knitwear', 'sweatshirts'],
   bottoms:     ['bottoms', 'pants', 'jeans', 'denim', 'trousers', 'shorts'],
@@ -151,13 +209,38 @@ const SHOPIFY_COLLECTION_MAP = {
   dress:       ['dresses', 'all'],
 };
 
-// Stage 5a: Fetch products directly from a brand's Shopify catalog JSON endpoint.
-// All collection slugs are tried in parallel — first one with products wins.
-async function fetchShopifyCatalog(domain, category, maxPrice) {
-  const collections = SHOPIFY_COLLECTION_MAP[category] ?? ['all'];
+/**
+ * Fetches products from a curated_brands record's Shopify catalog.
+ * Tries brand-specific slugs first, then category defaults, then /products.json.
+ * Runs slug attempts in parallel (within one brand) for speed.
+ * Returns normalized product array or [] if the brand's catalog is unreachable.
+ */
+async function fetchBrandShopifyCatalog(brand, category, maxPrice) {
+  const base = (brand.shopify_base_url ?? `https://${brand.domain}`).replace(/\/$/, '');
 
-  const tryCollection = async (col) => {
-    const url = `https://${domain}/collections/${col}/products.json?limit=20`;
+  // Brand-specific slugs (from admin verification) first, then category defaults, deduplicated
+  const brandSlugs    = brand.shopify_collection_slugs ?? [];
+  const categorySlugs = SHOPIFY_COLLECTION_MAP[category] ?? ['all'];
+  const slugsToTry    = [...new Set([...brandSlugs, ...categorySlugs])];
+
+  const mapProduct = (p) => ({
+    id:                   `shopify-${brand.domain}-${p.id}`,
+    name:                 p.title,
+    price:                parseFloat(p.variants?.[0]?.price ?? '0') || null,
+    store:                brand.name,
+    image_url:            p.images?.[0]?.src ?? null,
+    all_images:           (p.images ?? []).map(i => i.src),
+    product_url:          `${base}/products/${p.handle}`,
+    serpapi_product_link: null,
+    colors:               null,
+    style_category:       null,
+    fit_type:             null,
+    brand:                p.vendor ?? brand.name,
+    result_source:        'shopify',
+  });
+
+  const trySlug = async (slug) => {
+    const url = `${base}/collections/${slug}/products.json?limit=50`;
     const res = await fetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
       signal:  AbortSignal.timeout(5000),
@@ -166,209 +249,57 @@ async function fetchShopifyCatalog(domain, category, maxPrice) {
     const data = await res.json();
     if (!data?.products?.length) throw new Error('empty');
     const products = data.products
-      .filter(p => {
-        if (!maxPrice) return true;
-        const price = parseFloat(p.variants?.[0]?.price ?? '0');
-        return price > 0 && price <= maxPrice;
-      })
-      .map(p => ({
-        id:                   `shopify-${domain}-${p.id}`,
-        name:                 p.title,
-        price:                parseFloat(p.variants?.[0]?.price ?? '0') || null,
-        store:                domain.replace('www.', '').split('.')[0],
-        image_url:            p.images?.[0]?.src ?? null,
-        all_images:           (p.images ?? []).map(i => i.src),
-        product_url:          `https://${domain}/products/${p.handle}`,
-        serpapi_product_link: null,
-        colors:               null,
-        style_category:       null,
-        fit_type:             null,
-        brand:                p.vendor ?? null,
-        result_source:        'shopify',
-      }));
-    if (!products.length) throw new Error('no matching products');
-    return { col, products };
+      .filter(p => !maxPrice || parseFloat(p.variants?.[0]?.price ?? '0') <= maxPrice)
+      .map(mapProduct)
+      .filter(p => p.name && p.product_url);
+    if (!products.length) throw new Error('no matching products after price filter');
+    return products;
   };
 
-  const results = await Promise.allSettled(collections.map(tryCollection));
+  // Try all collection slugs in parallel — take the first that returns products
+  const results = await Promise.allSettled(slugsToTry.map(trySlug));
   const first   = results.find(r => r.status === 'fulfilled');
-  if (!first) return [];
-  const { col, products } = first.value;
-  console.log(`[shopify] ${domain}/${col}: ${products.length} products`);
-  return products;
-}
+  if (first) {
+    const products = first.value;
+    console.log(`[shopify] ${brand.name}: ${products.length} products`);
+    return products;
+  }
 
-// Hard cap on any single external search call. Resolves to [] on timeout.
-// 18s gives: 6s SerpAPI timeout + up to 12s for Claude knowledge fallback.
-const WEB_SEARCH_TIMEOUT_MS = 18000;
-const capSearch = (promise) =>
-  Promise.race([promise, new Promise(resolve => setTimeout(() => resolve([]), WEB_SEARCH_TIMEOUT_MS))]);
-
-// ── SerpAPI Google Shopping (primary text search) ────────────────────────────
-// Uses the same SHOPPING_API_KEY already wired for Google Lens visual search.
-// Returns structured product data without any LLM parsing — fast and reliable.
-// Returns null if the API key is not configured (signals caller to try Claude fallback).
-// Returns: product array on success, null if key missing, undefined if call failed (triggers Claude fallback)
-async function serpApiShoppingSearch(query, maxPrice, resultSource = 'serpapi') {
-  const API_KEY = process.env.SHOPPING_API_KEY;
-  console.log(`[serpapi/${resultSource}] key=${API_KEY ? `set(${API_KEY.slice(0,4)}…)` : 'MISSING'} query="${query.slice(0, 50)}"`);
-  if (!API_KEY) return null;
-
-  const params = new URLSearchParams({
-    engine:  'google_shopping',
-    q:       query,
-    gl:      'us',
-    hl:      'en',
-    api_key: API_KEY,
-  });
-
+  // All collection slugs failed — try the catch-all /products.json endpoint
   try {
-    const res = await fetch(`https://serpapi.com/search?${params}`, {
-      signal: AbortSignal.timeout(6000), // 6s so Claude fallback has room within the 18s cap
+    const url = `${base}/products.json?limit=50`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+      signal:  AbortSignal.timeout(5000),
     });
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      throw new Error(`HTTP ${res.status}: ${body.slice(0, 120)}`);
-    }
+    if (!res.ok) throw new Error(`${res.status}`);
     const data = await res.json();
-    if (data.error) throw new Error(`SerpAPI error: ${data.error}`);
+    const products = (data.products ?? [])
+      .filter(p => !maxPrice || parseFloat(p.variants?.[0]?.price ?? '0') <= maxPrice)
+      .map(mapProduct)
+      .filter(p => p.name && p.product_url);
+    if (products.length) console.log(`[shopify] ${brand.name}/all: ${products.length} products`);
 
-    const normalize = (raw) => raw
-      .filter(p => p.title && p.link)
-      .slice(0, 12)
-      .map(p => ({
-        id:                   `sp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        name:                 p.title,
-        price:                typeof p.extracted_price === 'number' ? p.extracted_price : parsePrice(p.price),
-        store:                p.source ?? null,
-        image_url:            p.thumbnail ?? null,
-        all_images:           p.thumbnail ? [p.thumbnail] : [],
-        product_url:          p.link,
-        serpapi_product_link: p.product_link ?? null,
-        colors:               null,
-        style_category:       null,
-        fit_type:             null,
-        brand:                p.brand ?? null,
-        result_source:        resultSource,
-      }));
+    // Mark brand as having a broken/empty catalog so we can investigate
+    if (!products.length) {
+      console.warn(`[shopify] ${brand.name}: no products from any endpoint`);
+      // Best-effort: update last_verified_at to null to flag for admin re-check
+      supabase.from('curated_brands')
+        .update({ last_verified_at: null })
+        .eq('slug', brand.slug)
+        .then(() => {});
+    }
 
-    // google_shopping engine returns shopping_results; standard engine returns inline_shopping_results.
-    // Try shopping_results first; fall back to inline_shopping_results so both plan types work.
-    const shopping  = data.shopping_results         ?? [];
-    const inlineSh  = data.inline_shopping_results  ?? [];
-    const raw       = shopping.length > 0 ? shopping : inlineSh;
-    const products  = normalize(raw);
-
-    console.log(`[serpapi/${resultSource}] ${products.length} products (shopping=${shopping.length} inline=${inlineSh.length})`);
     return products;
   } catch (err) {
-    console.error(`[serpapi/${resultSource}] failed:`, err.message);
-    return undefined; // signals caller: key is set but call failed → try Claude
-  }
-}
-
-// ── Claude knowledge fallback (when SerpAPI yields nothing) ─────────────────
-// Uses Claude's training knowledge — no web search tool required.
-// Completes in 2-4s and always returns valid JSON.
-// Products are real brands/styles Claude knows; URLs may need verification.
-async function claudeWebSearch(query, category, maxPrice, resultSource = 'claude_web') {
-  const priceClause = maxPrice ? ` under $${maxPrice}` : '';
-  const prompt = `You are a fashion shopping expert. List up to 10 real ${category} products matching: "${query}"${priceClause}.
-
-Use your training knowledge of actual products sold by real retailers. Include specific product names, accurate prices (within ~20% of actual), and real store URLs.
-
-Return ONLY a valid JSON array — no markdown fences, no explanation, just the raw array:
-[{"name":"exact product name","price":79.00,"store":"StoreName","product_url":"https://store.com/products/item","image_url":null,"brand":"Brand"},...]`;
-
-  try {
-    const response = await client.messages.create({
-      model:      'claude-haiku-4-5-20251001',
-      max_tokens: 2048,
-      messages:   [{ role: 'user', content: prompt }],
-    });
-    console.log(`[claude-knowledge/${resultSource}] response length: ${response.content[0]?.text?.length ?? 0} chars`);
-    return parseProductJson(response, null, resultSource);
-  } catch (err) {
-    console.error(`[claude-knowledge/${resultSource}] failed:`, err.status ?? '', err.message);
+    console.error(`[shopify] ${brand.name} all-products failed:`, err.message);
     return [];
   }
 }
 
-// Stage 5b: Brand-targeted product search — SerpAPI primary, Claude fallback.
-async function webSearchForBrand(brandName, domain, query, category, maxPrice) {
-  // SerpAPI: include brand name in query for Google Shopping targeting
-  const brandQuery = `${brandName} ${query}`;
-  const serpResults = await serpApiShoppingSearch(brandQuery, maxPrice, 'serpapi_brand');
-  // null = no key; undefined = key set but call failed; [] = success but 0 results
-  if (serpResults?.length > 0) return serpResults; // got products — done
-
-  // SerpAPI unavailable or returned nothing — fall back to Claude knowledge
-  const priceClause = maxPrice ? ` under $${maxPrice}` : '';
-  const prompt = `You are a fashion shopping expert. List up to 8 real products from ${brandName} matching: "${query}" (${category})${priceClause}.
-
-Use your training knowledge of ${brandName}'s actual catalog. Include specific product names and accurate prices.
-
-Return ONLY a valid JSON array — no markdown fences, no explanation:
-[{"name":"exact product name","price":79.00,"store":"${brandName}","product_url":"https://${domain ?? brandName.toLowerCase().replace(/\s+/g, '')}.com/products/...","image_url":null,"brand":"${brandName}"},...]`;
-
-  try {
-    const response = await client.messages.create({
-      model:      'claude-haiku-4-5-20251001',
-      max_tokens: 1536,
-      messages:   [{ role: 'user', content: prompt }],
-    });
-    console.log(`[claude-knowledge/brand/${brandName}] response length: ${response.content[0]?.text?.length ?? 0} chars`);
-    return parseProductJson(response, brandName, 'claude_brand');
-  } catch (err) {
-    console.error('[brand-knowledge] claude failed:', err.status ?? '', err.message);
-    return [];
-  }
-}
-
-// Generic search — SerpAPI primary, Claude fallback.
-async function genericWebSearch(query, category, maxPrice) {
-  const serpResults = await serpApiShoppingSearch(query, maxPrice, 'serpapi_generic');
-  // null = no key; undefined = key set but call failed; [] = success but 0 results
-  if (serpResults?.length > 0) return serpResults; // got products — done
-
-  // SerpAPI unavailable or returned nothing → always try Claude
-  console.log('[search] SerpAPI yielded nothing — trying Claude web search');
-  return claudeWebSearch(query, category, maxPrice, 'claude_generic');
-}
-
-function parseProductJson(response, defaultBrand, resultSource = 'brand_web') {
-  const textBlock = response?.content?.find(b => b.type === 'text');
-  if (!textBlock) { console.warn(`[parse-product/${resultSource}] no text block in response`); return []; }
-  console.log(`[parse-product/${resultSource}] raw (first 200):`, textBlock.text.slice(0, 200));
-  const match = textBlock.text.match(/\[\s*\{[\s\S]*\}\s*\]/);
-  if (!match) { console.warn(`[parse-product/${resultSource}] no JSON array found`); return []; }
-  try {
-    const raw = JSON.parse(match[0]);
-    if (!Array.isArray(raw)) return [];
-    return raw
-      .filter(p => p.name && p.product_url)
-      .map(p => ({
-        id:                   `ws-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        name:                 p.name,
-        price:                parsePrice(p.price),
-        store:                p.store ?? defaultBrand ?? null,
-        image_url:            p.image_url ?? null,
-        all_images:           p.image_url ? [p.image_url] : [],
-        product_url:          p.product_url,
-        serpapi_product_link: null,
-        colors:               null,
-        style_category:       null,
-        fit_type:             null,
-        brand:                p.brand ?? defaultBrand ?? p.store ?? null,
-        result_source:        resultSource,
-      }));
-  } catch { return []; }
-}
+// ── Category and keyword filtering ────────────────────────────────────────
 
 // Hard-block products that clearly belong to the wrong category.
-// Applied after every search (Shopify, brand web, generic web) so pants
-// can never appear in a tops slot, shoes in a bottoms slot, etc.
-// If the filter removes everything, return [] so the fallback generic search runs.
 const CATEGORY_BLOCKLIST = {
   tops:      /\b(pants?|trousers?|jeans?|denim\b(?! jacket| shirt)|shorts?|leggings?|joggers?|sweatpants?|chinos?|skirts?|loafers?|sneakers?|boots?|sandals?|shoes?)\b/i,
   bottoms:   /\b(t-?shirts?|tees?\b|blouses?|polos?|henley|henleys?|hoodie|hoodies?|sweatshirt|sweatshirts?|cardigans?|sweater|sweaters?|sneakers?|boots?|sandals?|shoes?|loafers?)\b/i,
@@ -381,15 +312,13 @@ export function hardCategoryFilter(products, category) {
   if (!blocklist) return products;
   const safe = products.filter(p => !blocklist.test(p.name ?? ''));
   if (safe.length === 0 && products.length > 0) {
-    console.warn(`[category-filter] all ${products.length} results blocked for "${category}" — likely wrong category from source`);
-    return []; // Return empty; triggers fallback generic search
+    console.warn(`[category-filter] all ${products.length} results blocked for "${category}"`);
+    return [];
   }
   return safe;
 }
 
-// Filter by core item keywords from the search query (strip style descriptors first).
-// Returns matched items, or the original list if no recognizable keywords remain after stripping.
-// Never falls back to the full pool — wrong-category items should be caught by hardCategoryFilter.
+// Strip style adjectives, keep core item keywords, filter products by them.
 const STYLE_STRIP = /\b(men'?s?|women'?s?|unisex|streetwear|minimal|vintage|oversized|relaxed|slim|baggy|loose|black|white|navy|gray|grey|beige|fitted|tailored|washed|faded|dark|light|casual|formal|basic|classic)\b/gi;
 
 function filterByItemKeywords(products, query) {
@@ -400,85 +329,111 @@ function filterByItemKeywords(products, query) {
     .map(w => w.toLowerCase());
 
   if (!core.length) return products;
-
-  const matches = products.filter(p =>
-    core.some(kw => (p.name ?? '').toLowerCase().includes(kw))
-  );
-
-  // Use matched items if any found; otherwise return all (style keywords may not appear in product names)
-  return matches.length >= 1 ? matches : products;
+  const matches = products.filter(p => core.some(kw => (p.name ?? '').toLowerCase().includes(kw)));
+  return matches.length >= 1 ? matches : products; // safety: never return empty when products exist
 }
 
+// ── Last-resort Claude knowledge fallback ─────────────────────────────────
+// Only fires when the curated catalog returns 0 products across all selected brands.
+// Uses Claude's training knowledge (no web search) for a reliable 2-4s JSON response.
+
+async function claudeKnowledgeFallback(query, category, maxPrice) {
+  const priceClause = maxPrice ? ` under $${maxPrice}` : '';
+  const prompt = `You are a fashion shopping expert. List up to 10 real ${category} products matching: "${query}"${priceClause}.
+
+Use your training knowledge of actual products from real brands. Return ONLY a valid JSON array — no markdown, no explanation:
+[{"name":"exact product name","price":79.00,"store":"StoreName","product_url":"https://store.com/products/item","image_url":null,"brand":"Brand"},...]`;
+
+  try {
+    const response = await client.messages.create({
+      model:      'claude-haiku-4-5-20251001',
+      max_tokens: 2048,
+      messages:   [{ role: 'user', content: prompt }],
+    });
+    const text  = response.content[0]?.text ?? '';
+    const match = text.match(/\[\s*\{[\s\S]*\}\s*\]/);
+    if (!match) { console.warn('[claude-fallback] no JSON array found'); return []; }
+    const raw = JSON.parse(match[0]);
+    return raw
+      .filter(p => p.name && p.product_url)
+      .map(p => ({
+        id:                   `cf-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        name:                 p.name,
+        price:                parsePrice(p.price),
+        store:                p.store ?? null,
+        image_url:            p.image_url ?? null,
+        all_images:           p.image_url ? [p.image_url] : [],
+        product_url:          p.product_url,
+        serpapi_product_link: null,
+        colors:               null,
+        style_category:       null,
+        fit_type:             null,
+        brand:                p.brand ?? p.store ?? null,
+        result_source:        'claude_knowledge',
+      }));
+  } catch (err) {
+    console.error('[claude-fallback] failed:', err.message);
+    return [];
+  }
+}
+
+// ── Main search function ──────────────────────────────────────────────────
+
 /**
- * Searches for products using a brand-first pipeline:
- * 1. Build a style brief from the user's DNA
- * 2. Claude selects 1-3 specific brands whose catalog matches the profile
- * 3. Fetch directly from those brands' Shopify catalogs (clean structured data)
- * 4. Fall back to brand-targeted web search if Shopify fails
- * 5. Fall back to generic web search if brand catalog is insufficient
+ * Searches for products using the curated brand catalog:
+ * 1. Query curated_brands for Shopify brands matching budget/aesthetic/gender
+ * 2. Claude Haiku ranks the top 5 by aesthetic fit
+ * 3. Iterate brands sequentially, fetching each Shopify catalog
+ * 4. Stop once 8+ products accumulated (early-stop to avoid unnecessary fetches)
+ * 5. Last resort: Claude knowledge fallback if catalog yields nothing
  *
  * @param {object} params
  * @param {string}   params.query          - Style-aware search string
  * @param {string}   params.category       - tops | bottoms | shoes | outerwear | accessories | dress
- * @param {number}   params.maxPrice       - Budget ceiling
- * @param {string}   params.countryCode    - Country for regional results (default 'us')
- * @param {object}   params.styleDna       - User's Style DNA for brand selection
- * @param {string[]} params.excludedBrands - Brand names already used in this outfit (prevent monoculture)
+ * @param {number}   params.maxPrice       - Budget ceiling (null = no limit)
+ * @param {string}   params.countryCode    - Country code (unused for Shopify, kept for API compatibility)
+ * @param {object}   params.styleDna       - User's Style DNA
+ * @param {string[]} params.excludedBrands - Brand names already used (prevent monoculture)
  * @returns {object[]} Normalized product array
  */
 export async function searchProducts({ query, category, maxPrice, countryCode = 'us', stores = [], styleDna = null, excludedBrands = [] }) {
-  const hasDna = !!(
-    styleDna?.primary_style_category ||
-    styleDna?.dominant_fit           ||
-    styleDna?.brand_affinities?.length
-  );
 
-  const enrichedQuery = hasDna
-    ? `${query} ${styleDna.primary_style_category ?? ''} ${styleDna.dominant_fit ?? ''}`.trim().replace(/\s+/g, ' ')
-    : query;
+  // Step 1: Select up to 5 ranked brands from the curated catalog
+  const selectedBrands = await selectBrandsFromCatalog(styleDna, query, category, maxPrice, excludedBrands);
 
-  // Brand pipeline and generic search run IN PARALLEL.
-  // Generic search (SerpAPI) completes in 1-3s and guarantees results even if
-  // the brand pipeline times out. Brand results are preferred (more targeted);
-  // generic fills any gaps after deduplication.
-  const fetchBrand = async (brand) => {
-    if (!brand.domain) return [];
-    let bp = [];
-    if (brand.shopify !== false) {
-      bp = await fetchShopifyCatalog(brand.domain, category, maxPrice);
+  if (!selectedBrands.length) {
+    console.warn(`[search] no brands selected for "${query}" (${category}) — trying knowledge fallback`);
+    return claudeKnowledgeFallback(query, category, maxPrice);
+  }
+
+  // Step 2: Iterate brands sequentially; stop once we have 8+ products
+  const accumulated = [];
+  for (const brand of selectedBrands) {
+    if (!brand.is_shopify) {
+      console.log(`[search] skipping ${brand.name} (non-Shopify)`);
+      continue;
     }
-    if (bp.length < 3) {
-      const fallback = await capSearch(webSearchForBrand(brand.name, brand.domain, query, category, maxPrice));
-      bp = bp.length >= fallback.length ? bp : fallback;
+    const products = await fetchBrandShopifyCatalog(brand, category, maxPrice);
+    const filtered  = filterByItemKeywords(products, query);
+    console.log(`[brand-catalog] ${brand.name}: ${filtered.length} products after keyword filter`);
+    accumulated.push(...filtered);
+
+    if (accumulated.length >= 8) {
+      console.log(`[search] ${accumulated.length} products after ${brand.name} — stopping early`);
+      break;
     }
-    bp = filterByItemKeywords(bp, query);
-    console.log(`[brand-catalog] ${brand.name}: ${bp.length} matching products`);
-    return bp;
-  };
+  }
 
-  const brandPipelinePromise = hasDna
-    ? (async () => {
-        const styleBrief     = buildStyleBrief(styleDna, query, category);
-        const selectedBrands = await selectBrands(styleBrief, query, category, maxPrice, excludedBrands);
-        console.log(`[brand-select] "${query}": ${selectedBrands.map(b => `${b.name} (${b.domain})`).join(', ') || 'none'}`);
-        const results = await Promise.all(selectedBrands.slice(0, 3).map(fetchBrand));
-        return results.flat();
-      })().catch(err => { console.error('[brand-pipeline]', err.message); return []; })
-    : Promise.resolve([]);
+  // Step 3: If catalog yielded nothing, fire Claude knowledge as last resort
+  if (!accumulated.length) {
+    console.warn(`[search] all Shopify fetches returned 0 for "${query}" — using Claude knowledge fallback`);
+    return claudeKnowledgeFallback(query, category, maxPrice);
+  }
 
-  const genericPromise = capSearch(genericWebSearch(enrichedQuery, category, maxPrice));
+  // Step 4: Hard-filter wrong-category items, deduplicate, return
+  const categorySafe = hardCategoryFilter(accumulated, category);
+  const pool = categorySafe.length >= 1 ? categorySafe : accumulated;
 
-  const [brandProducts, genericProducts] = await Promise.all([brandPipelinePromise, genericPromise]);
-  console.log(`[search] brand=${brandProducts.length} generic=${genericProducts.length} query="${query.slice(0, 60)}"`);
-
-  // Brand products first (more persona-targeted), generic fills remaining slots
-  let allProducts = [...brandProducts, ...genericProducts];
-
-  // Hard-remove wrong-category items that slipped through any source.
-  const categorySafe = hardCategoryFilter(allProducts, category);
-  const pool = categorySafe.length >= 1 ? categorySafe : allProducts;
-
-  // Deduplicate by normalized name
   const seen   = new Set();
   const unique = pool.filter(p => {
     const k = (p.name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40);
@@ -487,20 +442,24 @@ export async function searchProducts({ query, category, maxPrice, countryCode = 
     return true;
   });
 
+  console.log(`[search] final pool: ${unique.length} products for "${query.slice(0, 60)}"`);
   return unique.filter(p => p.name && p.product_url).slice(0, 15);
 }
 
+// ── Thumbnail enrichment (unchanged) ─────────────────────────────────────
+
 /**
  * Enrich a product list with Claude Vision thumbnail analysis.
- * Call this AFTER all slot searches complete — never inside a timed search call.
- * Mutates products in place (colors, fit, style_category, formality, etc).
- * 10-second total cap so it never stalls downstream assembly.
- *
- * @param {object[]} products
- * @returns {Promise<void>}
+ * Call AFTER all slot searches complete — never inside a timed search call.
  */
 export async function enrichSearchResults(products) {
   if (!products?.length) return;
   const enriched = await enrichProductsWithThumbnailAnalysis(products, 10_000);
   console.log(`[thumbnail] enriched ${enriched}/${products.length} products`);
 }
+
+// ── Removed code (SerpAPI Google Shopping) ───────────────────────────────
+//
+// REMOVED 2025-04-27: SerpAPI Google Shopping fallbacks replaced by curated brand catalog.
+// See git history if you need to restore serpApiShoppingSearch, webSearchForBrand,
+// genericWebSearch, or capSearch. Google Lens (visual_search.js) is unaffected.
