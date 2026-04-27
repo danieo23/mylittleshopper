@@ -343,16 +343,29 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget, refinemen
       if (wantsThrift)   textQueries.push(`${genderPrefix} thrift vintage secondhand ${slot.modifiers}`);
 
       // ── Run visual search + all text queries in parallel ───────────
+      // Hard timeouts on every external call so no single slow service
+      // (SerpAPI, Anthropic web search, Shopify) can stall the pipeline.
+      const cap = (promise, ms, fallback) =>
+        Promise.race([promise, new Promise(resolve => setTimeout(() => resolve(fallback), ms))]);
+
       const [visualResult, ...textResults] = await Promise.all([
-        visualSearchForSlot(
-          slot.category,
-          userProfile.wardrobeItems,
-          userProfile.aspirationItems ?? [],
-          dna,
-          budget
+        cap(
+          visualSearchForSlot(
+            slot.category,
+            userProfile.wardrobeItems,
+            userProfile.aspirationItems ?? [],
+            dna,
+            budget
+          ).catch(() => ({ products: [], source: 'error' })),
+          6000,
+          { products: [], source: 'timeout' }
         ),
         ...textQueries.map(q =>
-          searchProducts({ query: q.trim(), category: slot.category, maxPrice: budget, countryCode: userProfile.countryCode, styleDna: dna }).catch(() => [])
+          cap(
+            searchProducts({ query: q.trim(), category: slot.category, maxPrice: budget, countryCode: userProfile.countryCode, styleDna: dna }).catch(() => []),
+            12000,
+            []
+          )
         ),
       ]);
 

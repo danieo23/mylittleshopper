@@ -187,6 +187,12 @@ async function fetchShopifyCatalog(domain, category, maxPrice) {
   return products;
 }
 
+// Hard cap on any single web search call — prevents 60s Anthropic client
+// timeouts from stalling the pipeline. Resolves to [] on timeout.
+const WEB_SEARCH_TIMEOUT_MS = 9000;
+const capWebSearch = (promise) =>
+  Promise.race([promise, new Promise(resolve => setTimeout(() => resolve([]), WEB_SEARCH_TIMEOUT_MS))]);
+
 // Stage 5b: Brand-targeted web search fallback for non-Shopify brands.
 async function webSearchForBrand(brandName, domain, query, category, maxPrice) {
   const priceClause = maxPrice ? ` under $${maxPrice}` : '';
@@ -403,7 +409,7 @@ export async function searchProducts({ query, category, maxPrice, countryCode = 
         brandProducts = await fetchShopifyCatalog(brand.domain, category, maxPrice);
       }
       if (brandProducts.length < 3) {
-        const fallback = await webSearchForBrand(brand.name, brand.domain, query, category, maxPrice);
+        const fallback = await capWebSearch(webSearchForBrand(brand.name, brand.domain, query, category, maxPrice));
         brandProducts = brandProducts.length >= fallback.length ? brandProducts : fallback;
       }
       brandProducts = filterByItemKeywords(brandProducts, query);
@@ -421,7 +427,7 @@ export async function searchProducts({ query, category, maxPrice, countryCode = 
     const enrichedQuery = hasDna
       ? `${query} ${styleDna.primary_style_category ?? ''} ${styleDna.dominant_fit ?? ''}`.trim().replace(/\s+/g, ' ')
       : query;
-    const fallback = await genericWebSearch(enrichedQuery, category, maxPrice);
+    const fallback = await capWebSearch(genericWebSearch(enrichedQuery, category, maxPrice));
     allProducts.push(...fallback);
   }
 
