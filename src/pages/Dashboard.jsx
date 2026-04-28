@@ -10,14 +10,13 @@ const SUGGESTED = [
   'I have a job interview next week, something sharp but relaxed.',
 ];
 
-const LOADING_PHRASES = [
-  'Lives are about to be changed…',
-  'Glow up in 3, 2, 1…',
-  'You are NOT ready for this.',
-  'The fits are incoming.',
-  'Scouring the internet for your next obsession…',
-  'Your future wardrobe is loading…',
-  'Hold tight, this is going to be good.',
+const THINKING_STEPS = [
+  { text: 'Reading your style profile…',              ms: 0     },
+  { text: 'Selecting brands that match your vibe…',   ms: 2000  },
+  { text: 'Browsing brand catalogs…',                 ms: 5000  },
+  { text: 'Scoring products against your DNA…',       ms: 9000  },
+  { text: 'Building outfit ideas…',                   ms: 13000 },
+  { text: 'Almost there…',                            ms: 18000 },
 ];
 
 function formatRelativeDate(iso) {
@@ -553,7 +552,7 @@ export default function Dashboard() {
   const [history,         setHistory]         = useState([]);
   const [input,           setInput]           = useState('');
   const [loading,         setLoading]         = useState(false);
-  const [loadingPhrase,   setLoadingPhrase]   = useState(LOADING_PHRASES[0]);
+  const [thinkingStep,    setThinkingStep]    = useState(0);
   const [userId,          setUserId]          = useState(null);
   const [conversations,   setConversations]   = useState([]);
   const [conversationId,  setConversationId]  = useState(null);
@@ -587,20 +586,20 @@ export default function Dashboard() {
 
   useEffect(() => () => {
     if (animRef.current)   clearInterval(animRef.current);
-    if (phraseRef.current) clearInterval(phraseRef.current);
+    if (phraseRef.current) phraseRef.current.forEach?.(clearTimeout);
   }, []);
 
   const startPhraseLoop = () => {
-    phraseIdxRef.current = 0;
-    setLoadingPhrase(LOADING_PHRASES[0]);
-    phraseRef.current = setInterval(() => {
-      phraseIdxRef.current = (phraseIdxRef.current + 1) % LOADING_PHRASES.length;
-      setLoadingPhrase(LOADING_PHRASES[phraseIdxRef.current]);
-    }, 3500);
+    setThinkingStep(0);
+    if (phraseRef.current) phraseRef.current.forEach(clearTimeout);
+    phraseRef.current = THINKING_STEPS.slice(1).map((step, i) =>
+      setTimeout(() => setThinkingStep(i + 1), step.ms)
+    );
   };
 
   const stopPhraseLoop = () => {
-    if (phraseRef.current) { clearInterval(phraseRef.current); phraseRef.current = null; }
+    if (phraseRef.current) { phraseRef.current.forEach(clearTimeout); phraseRef.current = null; }
+    setThinkingStep(0);
   };
 
   const animateLastMessage = (fullText, choices = null) => {
@@ -895,21 +894,29 @@ export default function Dashboard() {
               ))}
 
               {loading && (
-                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
-                  <div className="bg-card border border-border px-4 py-3 flex gap-1.5 items-center">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
-                    <AnimatePresence mode="wait">
-                      <motion.span
-                        key={loadingPhrase}
-                        initial={{ opacity: 0, y: 4 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -4 }}
-                        transition={{ duration: 0.3 }}
-                        className="text-xs text-muted-foreground"
-                      >
-                        {loadingPhrase}
-                      </motion.span>
-                    </AnimatePresence>
+                <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="flex justify-start">
+                  <div className="bg-card border border-border px-4 py-3 min-w-[260px] max-w-xs space-y-2.5">
+                    {THINKING_STEPS.map((step, i) => {
+                      const done    = i < thinkingStep;
+                      const active  = i === thinkingStep;
+                      const upcoming = i > thinkingStep;
+                      return (
+                        <div key={i} className={`flex items-center gap-2.5 transition-opacity duration-300 ${upcoming ? 'opacity-25' : 'opacity-100'}`}>
+                          <div className="shrink-0 w-4 h-4 flex items-center justify-center">
+                            {done ? (
+                              <Check className="w-3 h-3 text-primary" />
+                            ) : active ? (
+                              <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+                            ) : (
+                              <div className="w-1.5 h-1.5 rounded-full bg-border" />
+                            )}
+                          </div>
+                          <span className={`text-xs leading-tight ${done ? 'text-muted-foreground line-through' : active ? 'text-foreground font-medium' : 'text-muted-foreground'}`}>
+                            {step.text}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
                 </motion.div>
               )}
