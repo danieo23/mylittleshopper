@@ -607,10 +607,10 @@ function hexToBucket(hex) {
 // Wallet balance is a payment limit, not a search budget: they are separate concepts.
 function parseBudget(text) {
   const m = (text ?? '').match(
-    /(?:(?:under|around|about|max(?:imum)?|budget(?:\s+of)?|spend(?:ing)?|no\s+more\s+than)\s+)?\$(\d+(?:\.\d{1,2})?)|(\d+)\s*(?:dollars?|bucks?)/i
+    /(?:(?:under|around|about|max(?:imum)?|budget(?:\s+of)?|spend(?:ing)?|no\s+more\s+than)\s+)?\$(\d+(?:\.\d{1,2})?)|(\d+)\s*(?:dollars?|bucks?)|^(\d+)\s*(?:more\s+or\s+less|ish|or\s+so|total|ish)?$/im
   );
   if (!m) return null;
-  const n = parseFloat(m[1] ?? m[2]);
+  const n = parseFloat(m[1] ?? m[2] ?? m[3]);
   return n >= 20 ? n : null; // ignore small numbers (sizes, counts, etc.)
 }
 
