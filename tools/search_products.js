@@ -241,6 +241,24 @@ async function fetchBrandShopifyCatalog(brand, category, maxPrice) {
   }
 }
 
+// ── Gender filtering ──────────────────────────────────────────────────────
+
+const WOMENS_SIGNALS = /\b(women'?s?|woman'?s?|ladies|lady|feminine|femme|girls?|her\b|bralette|bikini|maternity|nursing|blouse)\b/i;
+const MENS_SIGNALS   = /\b(men'?s?|man'?s?|male|guys?|his\b|beard)\b/i;
+
+function filterByGender(products, gender) {
+  if (!gender) return products;
+  if (gender === 'mens') {
+    const safe = products.filter(p => !WOMENS_SIGNALS.test(p.name ?? ''));
+    return safe.length ? safe : products; // never wipe everything
+  }
+  if (gender === 'womens') {
+    const safe = products.filter(p => !MENS_SIGNALS.test(p.name ?? ''));
+    return safe.length ? safe : products;
+  }
+  return products;
+}
+
 // ── Category and keyword filtering ────────────────────────────────────────
 
 // Hard-block products that clearly belong to the wrong category.
@@ -356,11 +374,13 @@ export async function searchProducts({ query, category, maxPrice, countryCode = 
     shopifyBrands.map(brand => fetchBrandShopifyCatalog(brand, category, maxPrice))
   );
 
+  const userGender = styleDna?.gender ?? null;
   const accumulated = [];
   brandResults.forEach((r, i) => {
     if (r.status !== 'fulfilled') return;
-    const filtered = filterByItemKeywords(r.value, query);
-    console.log(`[brand-catalog] ${shopifyBrands[i].name}: ${filtered.length} products after keyword filter`);
+    const genderSafe = filterByGender(r.value, userGender);
+    const filtered   = filterByItemKeywords(genderSafe, query);
+    console.log(`[brand-catalog] ${shopifyBrands[i].name}: ${filtered.length} products after gender+keyword filter`);
     accumulated.push(...filtered);
   });
 
