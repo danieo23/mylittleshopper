@@ -363,7 +363,7 @@ async function fillSlots(requiredSlots, userProfile, occasion, budget, refinemen
         ),
         ...textQueries.map(q =>
           cap(
-            searchProducts({ query: q.trim(), category: slot.category, maxPrice: budget, countryCode: userProfile.countryCode, styleDna: dna, excludedBrands: [...usedBrands] }).catch(() => []),
+            searchProducts({ query: q.trim(), category: slot.category, maxPrice: budget, countryCode: userProfile.countryCode, styleDna: { ...dna, gender: gender === 'men' ? 'mens' : gender === 'women' ? 'womens' : null }, excludedBrands: [...usedBrands] }).catch(() => []),
             20000,
             []
           )
@@ -1245,7 +1245,7 @@ async function executeTool(toolName, toolInput, userId, userProfile, excludeProd
       } else if (!/^(women'?s?|men'?s?|unisex)\b/i.test(query)) {
         query = `${gPrefix} ${query}`;
       }
-      const results = await searchProducts({ ...toolInput, query, countryCode: userProfile.countryCode, styleDna: userProfile.styleDna });
+      const results = await searchProducts({ ...toolInput, query, countryCode: userProfile.countryCode, styleDna: { ...userProfile.styleDna, gender: userProfile.gender === 'men' ? 'mens' : userProfile.gender === 'women' ? 'womens' : null } });
       if (!results.length) return [];
       const scored = results.map(p => ({ ...p, ...scoreProductMatch(p, userProfile.styleDna, occasion, userProfile.recentFeedbackSignals ?? []) }));
       // Filter out the excluded product (swap reroll) — normalize both names for fuzzy match
