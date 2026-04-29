@@ -841,7 +841,6 @@ async function handleRefinementSearch(feedback, priorSlots, userProfile, occasio
   }
 
   const outfits = buildShoppingBoard(priorSlots, slotCache);
-  await enrichProductImages(outfits);
 
   // Deterministic check: are negativeKeywords/avoidColors actually gone from results?
   const allProducts = outfits.flatMap(o => (o.items ?? []).map(i => i.product)).filter(Boolean);
@@ -1323,48 +1322,6 @@ function applyRequestKeywordFilter(cache, keywords) {
   return filtered;
 }
 
-// ── Image enrichment ──────────────────────────────────────────────
-// Uses the stored serpapi_product_link to fetch the full image gallery
-// from SerpAPI's google_product engine. Runs server-side so the frontend
-// receives complete image arrays without any extra client API calls.
-async function enrichProductImages(outfits) {
-  if (!outfits?.length) return;
-  const items = outfits.flatMap(o => o.items ?? []);
-  const toEnrich = items.filter(i => {
-    const p = i.product;
-    return p?.serpapi_product_link && (p?.all_images?.length ?? 0) <= 1;
-  });
-  if (!toEnrich.length) return;
-
-  await Promise.allSettled(toEnrich.map(async item => {
-    const p = item.product;
-    try {
-      const url = new URL(p.serpapi_product_link);
-      url.searchParams.set('api_key', process.env.SHOPPING_API_KEY);
-      const res  = await fetch(url.toString(), { signal: AbortSignal.timeout(5000) });
-      const data = await res.json();
-      const imgs = (data.product_results?.media ?? [])
-        .filter(m => m.type === 'image' && m.link)
-        .map(m => m.link);
-      if (imgs.length > 0) {
-        p.all_images = [...new Set([p.image_url, ...imgs].filter(Boolean))];
-      }
-      // Upgrade product_url to a direct retailer link when available.
-      // Google Shopping's link field goes through google.com; the product API
-      // sellers list has the real store URLs — prefer those when present.
-      const sellers = data.product_results?.sellers?.online
-        ?? data.product_results?.online_sellers
-        ?? [];
-      const directLink = sellers.find(s => s.link)?.link ?? null;
-      if (directLink && (!p.product_url || /google\.com/.test(p.product_url))) {
-        p.product_url = directLink;
-      }
-    } catch {
-      // silently skip — frontend falls back to the thumbnail already in all_images
-    }
-  }));
-}
-
 // ── Main handler (Vercel serverless function) ──────────────────────
 export const config = { maxDuration: 300 };
 
@@ -1453,7 +1410,6 @@ async function runAgent(message, conversationHistory, userId, recentConversation
     const redoSlots = buildWardrobeRedoSlots(userProfile.styleDna, occasion);
     const slotCache = await fillSlots(redoSlots, userProfile, occasion, budget);
     const outfits   = buildShoppingBoard(redoSlots, slotCache, 10);
-    await enrichProductImages(outfits);
 
     const catSummary = redoSlots
       .filter(s => slotCache[s.id]?.length)
@@ -1596,7 +1552,6 @@ async function runAgent(message, conversationHistory, userId, recentConversation
 
     if (filled.length > 0) {
       lastOutfits       = buildShoppingBoard(requiredSlots, slotCache);
-      await enrichProductImages(lastOutfits);
       hasSearchResults  = true;
 
       // Summarise results for the agent to write an accurate text reply
@@ -1837,7 +1792,6 @@ async function runAgent(message, conversationHistory, userId, recentConversation
           userRequest:        message,
           subtypeRequirements,
         });
-        await enrichProductImages(lastOutfits);
         // Tell the agent the ACTUAL products in the outfit so it writes an accurate reply.
         // Agent must describe what's really in the cards — not what it intended to find.
         const outfitSummary = lastOutfits[0]?.items
@@ -1885,7 +1839,6 @@ async function runAgent(message, conversationHistory, userId, recentConversation
         userRequest:        message,
         subtypeRequirements,
       });
-      await enrichProductImages(lastOutfits);
     } catch (err) {
       console.error('[agent] fallback build_outfits failed:', err.message);
     }

@@ -1,9 +1,9 @@
 /**
- * Sources quiz card images via SerpAPI Google Images.
+ * Sources quiz card images via Tavily image search.
  *
  * Pipeline per item:
  *   1. Build query = base + imageMode presentation suffix + shared negative terms
- *   2. Fetch top 10 results from Google Images
+ *   2. Fetch top 10 results from Tavily (include_images: true)
  *   3. For each candidate (up to 5), run dual Vision scoring:
  *        label_score       0–10  (does the image show the right item?)
  *        presentation_score 0–10  (does it look right for a premium quiz?)
@@ -14,12 +14,13 @@
  * Usage:
  *   node tools/source_quiz_images.js           # source all 60 items
  *   node tools/source_quiz_images.js --fix      # re-source only items that failed audit
- *   (reads ANTHROPIC_API_KEY + SHOPPING_API_KEY from .env.local)
+ *   (reads ANTHROPIC_API_KEY + TAVILY_API_KEY from .env.local)
  *
  * Outputs: quiz-image-results.json
  */
 
-import Anthropic from '@anthropic-ai/sdk';
+import { getClient } from '../lib/anthropic.js';
+import { tavilySearch } from '../lib/tavily.js';
 import { readFileSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -44,13 +45,11 @@ try {
   }
 } catch {}
 
-const SERP_KEY      = process.env.SHOPPING_API_KEY;
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 
-if (!SERP_KEY)      { console.error('SHOPPING_API_KEY not set'); process.exit(1); }
 if (!ANTHROPIC_KEY) { console.error('ANTHROPIC_API_KEY not set'); process.exit(1); }
 
-const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
+const client = getClient();
 
 // --fix mode: only re-source items that failed audit, preserve passing ones
 const FIX_MODE = process.argv.includes('--fix');
@@ -68,26 +67,15 @@ if (FIX_MODE) {
   console.log(`--fix mode: re-sourcing ${ITEM_IDS.length} failing items\n`);
 }
 
-// ── Google Images search ───────────────────────────────────────────────────────
+// ── Tavily image search ────────────────────────────────────────────────────────
 async function search(itemId) {
   const meta   = QUIZ_IMAGE_META[itemId];
   const base   = ITEM_BASE_QUERY[itemId];
   const suffix = MODE_SEARCH_SUFFIX[meta.imageMode];
   const query  = `${base} ${suffix} ${NEGATIVE_TERMS}`;
 
-  const url = new URL('https://serpapi.com/search.json');
-  url.searchParams.set('engine',  'google_images');
-  url.searchParams.set('q',       query);
-  url.searchParams.set('num',     '10');
-  url.searchParams.set('tbs',     'itp:photo');
-  url.searchParams.set('api_key', SERP_KEY);
-
-  const res  = await fetch(url.toString(), { signal: AbortSignal.timeout(15000) });
-  const data = await res.json();
-  if (!res.ok || data.error) throw new Error(data.error ?? `HTTP ${res.status}`);
-
-  return (data.images_results ?? [])
-    .map(r => r.original)
+  const data = await tavilySearch(query, { maxResults: 10, includeImages: true });
+  return (data.images ?? [])
     .filter(u => u && u.startsWith('http') && !u.includes('gstatic'));
 }
 

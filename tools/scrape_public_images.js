@@ -1,4 +1,4 @@
-const API_KEY = process.env.SHOPPING_API_KEY;
+import { tavilySearch } from '../lib/tavily.js';
 
 /**
  * Normalize whatever the user pasted into a clean https://www.pinterest.com/... URL.
@@ -145,26 +145,14 @@ async function tryHtmlScrape(boardUrl) {
 }
 
 /**
- * Strategy 3 — SerpAPI Google Images fallback.
+ * Strategy 3 — Tavily image search fallback.
  * Searches for "site:pinterest.com/username/boardname" to find pin images.
  * Least precise but works when other strategies fail.
  */
-async function trySerpApi(boardUrl) {
-  if (!API_KEY) return null;
+async function tryTavily(boardUrl) {
   try {
-    const searchUrl = new URL('https://serpapi.com/search');
-    searchUrl.searchParams.set('engine',  'google_images');
-    searchUrl.searchParams.set('q',       `site:${boardUrl}`);
-    searchUrl.searchParams.set('api_key', API_KEY);
-    searchUrl.searchParams.set('num',     '20');
-
-    const res  = await fetch(searchUrl.toString());
-    const data = await res.json();
-    const images = (data.images_results ?? [])
-      .map(r => r.original || r.thumbnail)
-      .filter(Boolean)
-      .slice(0, 20);
-
+    const data   = await tavilySearch(`site:${boardUrl}`, { maxResults: 20, includeImages: true });
+    const images = (data.images ?? []).filter(Boolean).slice(0, 20);
     return images.length > 0 ? images : null;
   } catch { return null; }
 }
@@ -210,11 +198,11 @@ export async function scrapePublicImages(rawUrl) {
     }
   } catch { /* fall through */ }
 
-  // Strategy 3: SerpAPI fallback
+  // Strategy 3: Tavily fallback
   try {
-    const serpImages = await trySerpApi(boardUrl);
-    if (serpImages) {
-      return { images: serpImages, count: serpImages.length, isPartial: true, source: 'serpapi' };
+    const tavilyImages = await tryTavily(boardUrl);
+    if (tavilyImages) {
+      return { images: tavilyImages, count: tavilyImages.length, isPartial: true, source: 'tavily' };
     }
   } catch { /* fall through */ }
 
