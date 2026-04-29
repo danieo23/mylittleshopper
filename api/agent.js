@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { createClient } from '@supabase/supabase-js';
 import { getUserProfile }       from '../tools/get_user_profile.js';
 import { searchProducts, hardCategoryFilter, enrichSearchResults } from '../tools/search_products.js';
 import { scoreProductMatch }    from '../tools/score_product_match.js';
@@ -241,6 +242,50 @@ function buildSlotQuery(slot, genderPrefix, dna, occasion, styleTags = [], ageSt
   }
 
   return query;
+}
+
+/**
+ * Ask Claude (Haiku) to infer which slot types the user needs for a vague
+ * request. Returns an array of SLOT_DEFS entries ready to pass to fillSlots.
+ */
+async function inferSlots(message, occasion, occasionResearch, userProfile) {
+  const slotKeys = Object.keys(SLOT_DEFS).join(', ');
+  const dnaSummary = userProfile.styleDna
+    ? `Style: ${userProfile.styleDna.primary_style_category ?? 'unknown'}, Fit: ${userProfile.styleDna.dominant_fit ?? 'unknown'}`
+    : 'No style data yet';
+  const occasionBrief = occasionResearch
+    ? `Event: ${occasionResearch.event}. Dress code: ${occasionResearch.dresscode}. Typical items: ${occasionResearch.typicalItems.join(', ')}.`
+    : (occasion ? `Occasion context: ${occasion}.` : 'No specific occasion.');
+
+  const prompt = `User request: "${message}"
+${occasionBrief}
+User style: ${dnaSummary}
+
+Pick the slot types from this list that the user needs: ${slotKeys}
+
+Rules:
+- Complete outfit → include top + bottom + shoes, optionally outerwear (3-4 slots max)
+- Match the occasion dress code strictly (smart casual → button_down/polo + chinos/trousers + loafers, not cargo_pants + graphic_tee)
+- Casual/unknown → lean toward user's style DNA fit and category
+- Return ONLY a JSON array of slot keys. Example: ["button_down","chinos","loafers"]`;
+
+  try {
+    const resp = await client.messages.create({
+      model:      'claude-haiku-4-5-20251001',
+      max_tokens: 150,
+      messages:   [{ role: 'user', content: prompt }],
+    });
+    const text  = resp.content.find(b => b.type === 'text')?.text ?? '';
+    const match = text.match(/\[.*?\]/s);
+    if (!match) return [];
+    const keys = JSON.parse(match[0]);
+    return keys
+      .filter(k => SLOT_DEFS[k])
+      .map((k, i) => ({ ...SLOT_DEFS[k], id: `${SLOT_DEFS[k].category}_${i}`, show_options: true }));
+  } catch (err) {
+    console.error('[inferSlots] failed:', err.message);
+    return [];
+  }
 }
 
 /**
@@ -601,17 +646,52 @@ function hexToBucket(hex) {
   return 'pink';
 }
 
+// ── Gender gate helpers ────────────────────────────────────────────
+const _supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+
+function detectGenderAnswer(text) {
+  const t = (text ?? '').toLowerCase();
+  if (/\b(men'?s?|male|man\b|guy|guys|masculine|men\b)\b/.test(t)) return 'men';
+  if (/\b(women'?s?|female|woman\b|girl|girls|feminine|ladies)\b/.test(t)) return 'women';
+  if (/\b(non.?binary|either|both|gender.?fluid)\b/.test(t)) return 'nonbinary';
+  return null;
+}
+
+async function saveGenderToProfile(userId, gender) {
+  try {
+    await _supabase
+      .from('style_profiles')
+      .upsert({ user_id: userId, gender }, { onConflict: 'user_id' });
+  } catch (err) {
+    console.error('[gender-gate] failed to save gender:', err.message);
+  }
+}
+
 // ── Budget parser ──────────────────────────────────────────────────
 // Extract an explicit dollar amount from the user's message.
 // Returns null when no budget is stated — callers treat null as "no ceiling."
 // Wallet balance is a payment limit, not a search budget: they are separate concepts.
 function parseBudget(text) {
-  const m = (text ?? '').match(
-    /(?:(?:under|around|about|max(?:imum)?|budget(?:\s+of)?|spend(?:ing)?|no\s+more\s+than)\s+)?\$(\d+(?:\.\d{1,2})?)|(\d+)\s*(?:dollars?|bucks?)|^(\d+)\s*(?:more\s+or\s+less|ish|or\s+so|total|ish)?$/im
-  );
-  if (!m) return null;
-  const n = parseFloat(m[1] ?? m[2] ?? m[3]);
-  return n >= 20 ? n : null; // ignore small numbers (sizes, counts, etc.)
+  const cleaned = (text ?? '').toLowerCase();
+  const patterns = [
+    /(?:under|below|less than|no more than|max(?:imum)?)\s*\$?(\d+)/,
+    /\$?(\d+)\s*(?:or less|max|maximum|tops?|budget|total)/,
+    /budget(?:'s| is| of)?\s*(?:about|around|roughly|~)?\s*\$?(\d+)/,
+    /(?:about|around|roughly|~|approx)\s*\$?(\d+)/,
+    /keep it (?:under|around|below)\s*\$?(\d+)/,
+    /spend(?:ing)?\s*(?:about|around|up to)?\s*\$?(\d+)/,
+    /\$?(\d+)\s*(?:more or less|ish|or so|roughly)/,
+    /\$(\d+(?:\.\d{1,2})?)/,
+    /(\d+)\s*(?:dollars?|bucks?)/,
+  ];
+  for (const pattern of patterns) {
+    const m = cleaned.match(pattern);
+    if (m) {
+      const n = parseFloat(m[1]);
+      if (n >= 20) return n;
+    }
+  }
+  return null;
 }
 
 // ── Occasion research ─────────────────────────────────────────────
@@ -1372,6 +1452,27 @@ async function runAgent(message, conversationHistory, userId, recentConversation
   // "no more questions after first answer" in both slot engine and agent loop.
   const priorUserTurns = conversationHistory.filter(m => m.role === 'user').length;
 
+  // ── GENDER GATE ───────────────────────────────────────────────────
+  // Gender must be known before any search runs. Without it the brand and
+  // product-level gender filters are blind and wrong-gender items leak through.
+  if (!userProfile.gender) {
+    const genderFromMessage = detectGenderAnswer(message);
+    if (genderFromMessage) {
+      // User stated gender in their message — save it and continue normally
+      await saveGenderToProfile(userId, genderFromMessage);
+      userProfile.gender = genderFromMessage;
+    } else if (priorUserTurns === 0) {
+      // First message, gender unknown — ask before doing anything else
+      return {
+        reply: "Quick one before I start — are you shopping for men's or women's fits?",
+        history: messages,
+        outfits: null,
+        choices: ["Men's", "Women's", "Non-binary / Either"],
+      };
+    }
+    // priorUserTurns > 0 and still no gender → brand filter's 'all'-only fallback handles it
+  }
+
   // Build text corpus from USER messages only — assistant text contains product names
   // that would pollute category detection and item counts.
   const userText = [message, ...conversationHistory
@@ -1597,6 +1698,42 @@ async function runAgent(message, conversationHistory, userId, recentConversation
     }
     // All slots empty (all searches failed) — fall through to agent loop
     console.warn('[slots] all slots empty — falling back to agent loop');
+  }
+
+  // ── SLOT INFERENCE FOR VAGUE REQUESTS ────────────────────────────
+  // "What should I wear to a rooftop dinner?" has no explicit slots.
+  // Rather than falling into the unpredictable agent loop, ask Claude
+  // (Haiku, cheap + fast) to infer the slots, then run the deterministic
+  // slot engine on the result. Only runs when budget is known.
+  if (requiredSlots.length === 0) {
+    const infBudget = parseBudget(userText);
+    if (infBudget) {
+      console.log('[slot-inference] no explicit slots, budget known — inferring from occasion/DNA');
+      const inferredSlots = await inferSlots(message, occasion, occasionResearch, userProfile);
+      if (inferredSlots.length > 0) {
+        console.log('[slot-inference] inferred:', inferredSlots.map(s => s.label).join(', '));
+        const infSlotCache = await fillSlots(inferredSlots, userProfile, occasion, infBudget, null, occasionResearch);
+        const infFilled = inferredSlots.filter(s => (infSlotCache[s.id]?.length ?? 0) > 0);
+        if (infFilled.length > 0) {
+          lastOutfits = buildShoppingBoard(inferredSlots, infSlotCache);
+          await enrichProductImages(lastOutfits);
+          hasSearchResults = true;
+          const found = infFilled
+            .map(s => `${s.label}: "${infSlotCache[s.id][0].name}" ($${infSlotCache[s.id][0].price})`)
+            .join(', ');
+          const ctxMsg = `[Slot inference ran. Outfit assembled from: ${found}. Cards shown in UI. Reply in 1–2 sentences — briefly describe the look in your own voice. Plain text only.]`;
+          const replyResp = await client.messages.create({
+            model:      LOOP_MODEL,
+            max_tokens: 256,
+            system:     buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch),
+            messages:   [...conversationHistory, { role: 'user', content: message }, { role: 'user', content: ctxMsg }],
+          });
+          const { reply, choices } = parseChoices(replyResp.content.find(b => b.type === 'text')?.text ?? '');
+          return { reply, history: messages, outfits: lastOutfits, choices };
+        }
+        console.warn('[slot-inference] inferred slots all empty — falling through to agent loop');
+      }
+    }
   }
 
   // ── CATEGORY GATE: for vague requests, wait until all categories are cached ──

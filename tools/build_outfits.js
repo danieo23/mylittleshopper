@@ -149,26 +149,49 @@ Only return the JSON array. No other text.`;
 
   // Track which products are used across ALL outfits for strict rotation enforcement
   const usedAcrossOutfits = new Set();
+  const usedBrandsAcrossOutfits = new Set();
+  const productKey = p => (p.name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 50);
 
   return outfits.map(outfit => {
     const seenInThisOutfit = new Set();
 
     const resolvedItems = outfit.items.map(item => {
-      const product = allProducts.find(p => matchProduct(p.name, item.product_name));
+      // Try Claude's pick first — skip if already used across outfits
+      let product = allProducts.find(p =>
+        matchProduct(p.name, item.product_name) && !usedAcrossOutfits.has(productKey(p))
+      );
+
+      // Claude reused a product — fall back to best unused alternative in same category
+      if (!product) {
+        const catKey = item.category?.toLowerCase();
+        const fallbacks = allProducts
+          .filter(p =>
+            (p.category?.toLowerCase() === catKey || p._category?.toLowerCase() === catKey) &&
+            !usedAcrossOutfits.has(productKey(p)) &&
+            !seenInThisOutfit.has(productKey(p))
+          )
+          // prefer brands not already dominant in prior outfits
+          .sort((a, b) => {
+            const aUsedBrand = usedBrandsAcrossOutfits.has(a.brand ?? '') ? -10 : 0;
+            const bUsedBrand = usedBrandsAcrossOutfits.has(b.brand ?? '') ? -10 : 0;
+            return ((b._score ?? b.score ?? 0) + bUsedBrand) - ((a._score ?? a.score ?? 0) + aUsedBrand);
+          });
+        product = fallbacks[0] ?? null;
+      }
+
       return { ...item, product: product ?? null };
     }).filter(i => {
       if (!i.product) return false;
-      // Deduplicate within this outfit — same product name cannot appear twice
-      const key = (i.product.name ?? i.product_name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 50);
+      const key = productKey(i.product);
       if (seenInThisOutfit.has(key)) return false;
       seenInThisOutfit.add(key);
       return true;
     });
 
-    // Mark these products as used so later outfits rotate to different items
+    // Mark these products and brands as used so later outfits rotate away from them
     resolvedItems.forEach(i => {
-      const key = (i.product.name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 50);
-      usedAcrossOutfits.add(key);
+      usedAcrossOutfits.add(productKey(i.product));
+      if (i.product.brand) usedBrandsAcrossOutfits.add(i.product.brand);
     });
 
     const newProducts = resolvedItems.map(i => i.product);
