@@ -107,10 +107,10 @@ async function selectBrandsFromCatalog(styleDna, query, category, maxPrice, excl
     // Formal occasions: skip brands tagged streetwear or skate
     if (formal && brand.aesthetic_tags?.some(t => /streetwear|skate/i.test(t))) return false;
     // Gender: skip brands where gender_focus is opposite of user's.
-    // When gender is unknown, restrict to gender-neutral brands to avoid contamination.
+    // When gender is unknown, only block brands explicitly for the opposite gender.
     if (userGender === 'mens'   && brand.gender_focus === 'womens') return false;
     if (userGender === 'womens' && brand.gender_focus === 'mens')   return false;
-    if (!userGender && brand.gender_focus !== 'all') return false;
+    if (!userGender && brand.gender_focus === 'womens') return false;
     return true;
   });
 
@@ -147,11 +147,11 @@ async function selectBrandsFromCatalog(styleDna, query, category, maxPrice, excl
 
 // Standard collection slugs per category tried when brand has no custom slugs configured.
 const SHOPIFY_COLLECTION_MAP = {
-  tops:        ['t-shirts', 'tops', 'shirts', 'graphic-tees', 'tees', 'knitwear', 'sweatshirts'],
-  bottoms:     ['bottoms', 'pants', 'jeans', 'denim', 'trousers', 'shorts'],
-  shoes:       ['shoes', 'footwear', 'sneakers', 'boots', 'sandals'],
-  outerwear:   ['outerwear', 'jackets', 'coats', 'layers'],
-  accessories: ['accessories', 'all'],
+  tops:        ['polos', 'polo-shirts', 'polo', 't-shirts', 'tops', 'shirts', 'dress-shirts', 'button-downs', 'graphic-tees', 'tees', 'knitwear', 'sweatshirts'],
+  bottoms:     ['slacks', 'chinos', 'dress-pants', 'trousers', 'bottoms', 'pants', 'jeans', 'denim', 'shorts'],
+  shoes:       ['shoes', 'footwear', 'sneakers', 'boots', 'sandals', 'loafers', 'dress-shoes'],
+  outerwear:   ['outerwear', 'jackets', 'coats', 'blazers', 'layers'],
+  accessories: ['hats', 'caps', 'accessories', 'all'],
   dress:       ['dresses', 'all'],
 };
 
@@ -283,9 +283,33 @@ export function hardCategoryFilter(products, category) {
 }
 
 // Strip style adjectives, keep core item keywords, filter products by them.
-const STYLE_STRIP = /\b(men'?s?|women'?s?|unisex|streetwear|minimal|vintage|oversized|relaxed|slim|baggy|loose|black|white|navy|gray|grey|beige|fitted|tailored|washed|faded|dark|light|casual|formal|basic|classic)\b/gi;
+const STYLE_STRIP = /\b(men'?s?|women'?s?|unisex|streetwear|minimal|vintage|oversized|relaxed|slim|baggy|loose|black|white|navy|gray|grey|beige|fitted|tailored|washed|faded|dark|light|casual|formal|basic|classic|golf|preppy|country.?club|old.?money|masters?)\b/gi;
+
+// Specific item types that require a direct name match — broad keyword overlap isn't enough.
+const SPECIFIC_ITEM_TYPES = [
+  'polo', 'polos', 'slack', 'slacks', 'chino', 'chinos', 'blazer', 'blazers',
+  'loafer', 'loafers', 'oxford', 'oxfords', 'cardigan', 'cardigans',
+  'trucker', 'hoodie', 'hoodies', 'jogger', 'joggers', 'denim jacket',
+  'bomber', 'parka', 'puffer', 'linen', 'henley', 'henleys',
+];
+
+function extractSpecificTypes(query) {
+  const q = query.toLowerCase();
+  return SPECIFIC_ITEM_TYPES.filter(t => q.includes(t));
+}
 
 function filterByItemKeywords(products, query) {
+  // If the query mentions a specific item type, require that type in the product name.
+  const specificTypes = extractSpecificTypes(query);
+  if (specificTypes.length) {
+    const strict = products.filter(p =>
+      specificTypes.some(t => (p.name ?? '').toLowerCase().includes(t))
+    );
+    if (strict.length >= 1) return strict;
+    // Strict match found nothing — return [] so the caller can trigger fallback
+    return [];
+  }
+
   const core = query
     .replace(STYLE_STRIP, '')
     .split(/\s+/)
@@ -294,7 +318,7 @@ function filterByItemKeywords(products, query) {
 
   if (!core.length) return products;
   const matches = products.filter(p => core.some(kw => (p.name ?? '').toLowerCase().includes(kw)));
-  return matches.length >= 1 ? matches : products; // safety: never return empty when products exist
+  return matches.length >= 1 ? matches : products;
 }
 
 // ── Last-resort Claude knowledge fallback ─────────────────────────────────
@@ -378,17 +402,24 @@ export async function searchProducts({ query, category, maxPrice, countryCode = 
 
   const userGender = styleDna?.gender ?? null;
   const accumulated = [];
+  let totalBeforeKeywordFilter = 0;
   brandResults.forEach((r, i) => {
     if (r.status !== 'fulfilled') return;
     const genderSafe = filterByGender(r.value, userGender);
+    totalBeforeKeywordFilter += genderSafe.length;
     const filtered   = filterByItemKeywords(genderSafe, query);
     console.log(`[brand-catalog] ${shopifyBrands[i].name}: ${filtered.length} products after gender+keyword filter`);
     accumulated.push(...filtered);
   });
 
-  // Step 3: If catalog yielded nothing, fire Claude knowledge as last resort
+  // Step 3: If catalog yielded nothing, fire Claude knowledge as last resort.
+  // Also fire if brands had products but none matched the specific item type —
+  // this means the curated catalog doesn't carry that item (e.g. polos at a streetwear brand).
   if (!accumulated.length) {
-    console.warn(`[search] all Shopify fetches returned 0 for "${query}" — using Claude knowledge fallback`);
+    const reason = totalBeforeKeywordFilter > 0
+      ? `catalog had ${totalBeforeKeywordFilter} products but none matched item type in "${query}"`
+      : `all Shopify fetches returned 0`;
+    console.warn(`[search] ${reason} — using Claude knowledge fallback`);
     return claudeKnowledgeFallback(query, category, maxPrice);
   }
 
