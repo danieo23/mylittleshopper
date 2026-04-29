@@ -106,9 +106,11 @@ async function selectBrandsFromCatalog(styleDna, query, category, maxPrice, excl
     if (excludedBrands.some(e => e.toLowerCase() === brand.name.toLowerCase())) return false;
     // Formal occasions: skip brands tagged streetwear or skate
     if (formal && brand.aesthetic_tags?.some(t => /streetwear|skate/i.test(t))) return false;
-    // Gender: skip brands where gender_focus is opposite of user's
+    // Gender: skip brands where gender_focus is opposite of user's.
+    // When gender is unknown, restrict to gender-neutral brands to avoid contamination.
     if (userGender === 'mens'   && brand.gender_focus === 'womens') return false;
     if (userGender === 'womens' && brand.gender_focus === 'mens')   return false;
+    if (!userGender && brand.gender_focus !== 'all') return false;
     return true;
   });
 

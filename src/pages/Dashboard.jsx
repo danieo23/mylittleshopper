@@ -344,18 +344,37 @@ function RefinementBar({ onSubmit }) {
 // ─── Outfit carousel — renders ALL returned outfits ──────────────────
 
 function OutfitCarousel({ outfits, userId, history, onRefinement }) {
+  const [activeTab, setActiveTab] = useState(0);
   if (!outfits?.length) return null;
+  const safeIdx = Math.min(activeTab, outfits.length - 1);
+  const outfit  = outfits[safeIdx];
+
   return (
     <div className="mt-3">
-      {outfits.map((outfit, i) => (
-        <OutfitRow
-          key={i}
-          outfit={outfit}
-          outfitIdx={i}
-          userId={userId}
-          history={history}
-        />
-      ))}
+      {outfits.length > 1 && (
+        <div className="flex flex-wrap gap-1 mb-2">
+          {outfits.map((o, i) => (
+            <button
+              key={i}
+              onClick={() => setActiveTab(i)}
+              className={`px-3 py-1.5 text-xs uppercase tracking-wider border transition ${
+                i === safeIdx
+                  ? 'border-primary text-primary'
+                  : 'border-border text-muted-foreground hover:border-foreground/30'
+              }`}
+            >
+              {o.outfit_name ?? `Look ${i + 1}`}
+            </button>
+          ))}
+        </div>
+      )}
+      <OutfitRow
+        key={safeIdx}
+        outfit={outfit}
+        outfitIdx={safeIdx}
+        userId={userId}
+        history={history}
+      />
       {onRefinement && <RefinementBar onSubmit={onRefinement} />}
     </div>
   );

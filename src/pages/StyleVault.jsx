@@ -1209,7 +1209,7 @@ export default function StyleVault() {
               key={opt.key}
               onClick={() => saveProfile({ gender: opt.key })}
               className={`px-4 py-2 border text-xs uppercase tracking-wider transition ${
-                (profile.gender ?? 'women') === opt.key
+                profile.gender === opt.key
                   ? 'border-primary text-primary'
                   : 'border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground'
               }`}
@@ -1218,6 +1218,11 @@ export default function StyleVault() {
             </button>
           ))}
         </div>
+        {!profile.gender && (
+          <p className="text-[10px] text-amber-500/70 mt-2">
+            Select your department — this improves every recommendation.
+          </p>
+        )}
       </Section>
 
       {/* Age range */}
