@@ -1,4 +1,5 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { getClient }            from '../lib/anthropic.js';
+import { agentLog }             from '../lib/agent-logger.js';
 import { getUserProfile }       from '../tools/get_user_profile.js';
 import { searchProducts, hardCategoryFilter, enrichSearchResults } from '../tools/search_products.js';
 import { scoreProductMatch }    from '../tools/score_product_match.js';
@@ -12,7 +13,7 @@ import { getInspoProducts }     from '../tools/get_inspo_products.js';
 import { visualSearchForSlot }  from '../tools/visual_search.js';
 import { comprehendFeedback, verifyRefinement, describePlan } from '../tools/refine_search.js';
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, timeout: 60_000 });
+const client = getClient();
 
 // ── Tool definitions ───────────────────────────────────────────────
 // get_user_profile and score_products are intentionally omitted:
@@ -77,6 +78,22 @@ const TOOLS = [
     },
   },
 ];
+
+// ── Prompt-caching helpers ─────────────────────────────────────────
+// Anthropic caches content up to the last block marked cache_control.
+// CACHED_TOOLS marks the final tool definition so the static tool list
+// survives across all loop turns without re-transmission.
+const CACHED_TOOLS = [
+  ...TOOLS.slice(0, -1),
+  { ...TOOLS[TOOLS.length - 1], cache_control: { type: 'ephemeral' } },
+];
+
+// Wrap the system prompt in the array format required for cache_control.
+// The prompt content is identical on every loop turn within a single request,
+// so turns 2-N get a cache hit and pay only output tokens.
+function cachedSystem(prompt) {
+  return [{ type: 'text', text: prompt, cache_control: { type: 'ephemeral' } }];
+}
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // SLOT-BASED SHOPPING ENGINE
@@ -1352,6 +1369,7 @@ async function enrichProductImages(outfits) {
 export const config = { maxDuration: 300 };
 
 async function runAgent(message, conversationHistory, userId, recentConversations = [], excludeProductName = null) {
+  agentLog.agentStart(userId, message);
   // Fetch profile once — reused for system prompt and cached for tool calls
   const userProfile = await getUserProfile(userId);
 
@@ -1446,7 +1464,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
     const replyResp = await client.messages.create({
       model:      LOOP_MODEL,
       max_tokens: 256,
-      system:     buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch),
+      system:     cachedSystem(buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch)),
       messages:   [...conversationHistory, { role: 'user', content: message }, { role: 'user', content: ctxMsg }],
     });
     const { reply, choices } = parseChoices(replyResp.content.find(b => b.type === 'text')?.text ?? '');
@@ -1497,7 +1515,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
           const replyResp = await client.messages.create({
             model:      LOOP_MODEL,
             max_tokens: 256,
-            system:     buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch),
+            system:     cachedSystem(buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch)),
             messages:   [...conversationHistory, { role: 'user', content: message }, { role: 'user', content: ctxMsg }],
           });
           const { reply, choices } = parseChoices(replyResp.content.find(b => b.type === 'text')?.text ?? '');
@@ -1529,7 +1547,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
       const clarifyResp = await client.messages.create({
         model:      LOOP_MODEL,
         max_tokens: 200,
-        system:     buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch),
+        system:     cachedSystem(buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch)),
         messages:   [...conversationHistory, { role: 'user', content: message }, { role: 'user', content: ctxMsg }],
       });
       const { reply: clarifyText, choices: clarifyChoices } = parseChoices(
@@ -1551,7 +1569,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
       const clarifyResp = await client.messages.create({
         model:      LOOP_MODEL,
         max_tokens: 200,
-        system:     buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch),
+        system:     cachedSystem(buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch)),
         messages:   [...conversationHistory, { role: 'user', content: message }, { role: 'user', content: ctxMsg }],
       });
       const { reply: clarifyText, choices: clarifyChoices } = parseChoices(
@@ -1589,7 +1607,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
       const replyResp = await client.messages.create({
         model:      LOOP_MODEL,
         max_tokens: 256,
-        system:     buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch),
+        system:     cachedSystem(buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch)),
         messages:   [...conversationHistory, { role: 'user', content: message }, { role: 'user', content: ctxMsg }],
       });
       const { reply, choices } = parseChoices(replyResp.content.find(b => b.type === 'text')?.text ?? '');
@@ -1730,11 +1748,13 @@ async function runAgent(message, conversationHistory, userId, recentConversation
   let response = await client.messages.create({
     model:       LOOP_MODEL,
     max_tokens:  LOOP_TOKENS,
-    system:      buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch),
-    tools:       TOOLS,
+    system:      cachedSystem(buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch)),
+    tools:       CACHED_TOOLS,
     tool_choice: { type: 'auto' },
     messages,
   });
+
+  agentLog.agentTurn(0, response.stop_reason, response.usage);
 
   // Agentic loop — run all tool calls per turn in parallel
   while (turns++ < MAX_TURNS && response.stop_reason === 'tool_use') {
@@ -1743,8 +1763,11 @@ async function runAgent(message, conversationHistory, userId, recentConversation
 
     const toolResults = await Promise.all(
       toolUseBlocks.map(async (block) => {
+        agentLog.toolCall(block.name, block.input);
+        const _toolStart = Date.now();
         try {
           const result = await executeTool(block.name, block.input, userId, userProfile, excludeProductName, occasion);
+          agentLog.toolResult(block.name, Date.now() - _toolStart, true, Array.isArray(result) ? `${result.length} items` : typeof result);
           if (block.name === 'search_products' && Array.isArray(result) && result.length > 0) {
             hasSearchResults = true;
             const cat = block.input.category;
@@ -1783,6 +1806,7 @@ async function runAgent(message, conversationHistory, userId, recentConversation
           }
           return { type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) };
         } catch (err) {
+          agentLog.toolResult(block.name, Date.now() - _toolStart, false, err.message);
           console.error(`[agent] tool error (${block.name}):`, err.message);
           return { type: 'tool_result', tool_use_id: block.id, content: `Error: ${err.message}`, is_error: true };
         }
@@ -1837,11 +1861,12 @@ async function runAgent(message, conversationHistory, userId, recentConversation
     response = await client.messages.create({
       model:       LOOP_MODEL,
       max_tokens:  LOOP_TOKENS,
-      system:      buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch),
-      tools:       TOOLS,
+      system:      cachedSystem(buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch)),
+      tools:       CACHED_TOOLS,
       tool_choice: { type: 'auto' },
       messages,
     });
+    agentLog.agentTurn(turns, response.stop_reason, response.usage);
   }
 
   // Fallback: if we have search results but outfits never fired (e.g. Claude searched
@@ -1883,17 +1908,19 @@ async function runAgent(message, conversationHistory, userId, recentConversation
     const recovery = await client.messages.create({
       model:      LOOP_MODEL,
       max_tokens: 512,
-      system:     buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch),
+      system:     cachedSystem(buildSystemPrompt(userProfile, recentConversations, priorUserTurns, occasionResearch)),
       messages,
     });
     const rawRecovery = recovery.content.find(b => b.type === 'text')?.text
       ?? "I hit a snag sourcing everything in one shot — try breaking the request into smaller pieces.";
     const { reply: recoveryText, choices: recoveryChoices } = parseChoices(rawRecovery);
+    agentLog.agentEnd(turns, !!lastOutfits);
     return { reply: recoveryText, history: messages, outfits: lastOutfits, choices: recoveryChoices };
   }
 
   const rawText   = response.content.find(b => b.type === 'text')?.text ?? '';
   const { reply: finalText, choices } = parseChoices(rawText);
+  agentLog.agentEnd(turns, !!lastOutfits);
   return { reply: finalText, history: messages, outfits: lastOutfits, choices };
 }
 
@@ -1916,3 +1943,8 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: err.message ?? 'Internal server error' });
   }
 }
+
+// ── Named exports ─────────────────────────────────────────────────
+// Pure utility functions — canonical source is lib/agent-utils.js.
+// Re-exported here so external callers that already import from agent.js still work.
+export { parseBudget, hexToBucket, parseRequestSlots, researchOccasion, buildShoppingBoard, SLOT_DEFS } from '../lib/agent-utils.js';

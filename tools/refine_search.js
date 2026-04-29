@@ -1,6 +1,7 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { getClient } from '../lib/anthropic.js';
+import { agentLog }  from '../lib/agent-logger.js';
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const client = getClient();
 
 /**
  * Uses Opus to parse user feedback into a concrete RefinementPlan.
@@ -61,19 +62,21 @@ ${priorResultsText.slice(0, 1200)}
 
 User feedback: "${feedback}"`;
 
+  const _t0 = Date.now();
   const response = await client.messages.create({
     model:      'claude-opus-4-7',
     max_tokens: 512,
     system:     systemPrompt,
     messages:   [{ role: 'user', content: userMsg }],
   });
+  agentLog.toolResult('comprehend_feedback', Date.now() - _t0, true, `${response.usage?.output_tokens ?? '?'} tokens`);
 
   const text  = response.content[0].text.trim();
   const match = text.match(/\{[\s\S]*\}/);
   if (!match) throw new Error('Opus comprehension returned no JSON');
 
   const plan = JSON.parse(match[0]);
-  console.log('[refine] Opus plan:', JSON.stringify(plan));
+  agentLog.toolCall('comprehend_feedback', { confidence: plan.confidence, interpretation: plan.interpretation });
   return plan;
 }
 

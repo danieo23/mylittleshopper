@@ -1,7 +1,8 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { getClient }            from '../lib/anthropic.js';
+import { agentLog }             from '../lib/agent-logger.js';
 import { checkOutfitMultiplier } from './check_outfit_multiplier.js';
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, timeout: 20_000 });
+const client = getClient();
 
 /**
  * Takes scored products grouped by category and assembles 3-5 complete outfit sets.
@@ -75,11 +76,14 @@ Return a JSON array of outfit objects. Each object:
 
 Only return the JSON array. No other text.`;
 
+  const _t0 = Date.now();
   const response = await client.messages.create({
     model:      'claude-sonnet-4-6',
     max_tokens: 2048,
     messages:   [{ role: 'user', content: prompt }],
   });
+  agentLog.agentTurn('build_outfits', response.stop_reason, response.usage);
+  agentLog.toolResult('build_outfits', Date.now() - _t0, true, `${response.usage?.output_tokens ?? '?'} tokens`);
 
   const text      = response.content[0].text.trim();
   const jsonMatch = text.match(/\[[\s\S]*\]/);

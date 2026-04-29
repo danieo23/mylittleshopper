@@ -1,6 +1,6 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { getClient } from '../lib/anthropic.js';
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const client = getClient();
 
 const ANALYSIS_PROMPT = `You are a professional fashion analyst and OCR specialist. Analyze this clothing image with two simultaneous passes — OCR and visual feature extraction — and return a single JSON object.
 
@@ -76,14 +76,17 @@ async function buildImageSource(imageUrl) {
 export async function analyzeImageStyle(imageUrl, imageType = 'wardrobe') {
   const source = await buildImageSource(imageUrl);
 
+  // ANALYSIS_PROMPT is static — cache it so batch wardrobe uploads only pay
+  // the full prompt cost on the first image; subsequent images get a cache hit.
+  // The image block is always fresh (dynamic), so it follows the cached text.
   const response = await client.messages.create({
     model:      'claude-sonnet-4-6',
     max_tokens: 1024,
     messages: [{
       role: 'user',
       content: [
+        { type: 'text',  text: ANALYSIS_PROMPT, cache_control: { type: 'ephemeral' } },
         { type: 'image', source },
-        { type: 'text',  text: ANALYSIS_PROMPT },
       ],
     }],
   });
